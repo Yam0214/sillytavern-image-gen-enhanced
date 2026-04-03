@@ -3620,6 +3620,9 @@ async function genNanobanana(prompt, negative, s, signal) {
     }
 
     let finalPrompt = `Generate an image: ${prompt}`;
+    if (s.nanobananaRefImages?.length) {
+        finalPrompt = `Using the ${s.nanobananaRefImages.length} reference image(s) provided above as style/content guidance, generate an image: ${prompt}`;
+    }
     if (negative) finalPrompt += ` Avoid: ${negative}`;
     if (s.nanobananaExtraInstructions) finalPrompt += ` ${s.nanobananaExtraInstructions}`;
 

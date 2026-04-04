@@ -5,6 +5,10 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.8.8
+- Fixed proxy `/images/generations` reference-image payloads for Airforce-style OpenAI-compatible backends by sending `image_urls` instead of only the older `image` field.
+- Extended proxy mode now sends both `image_urls` and legacy `image` for broader compatibility, while strict mode keeps the cleaner Airforce/OpenAI-style field set.
+
 ## What's New in v1.8.7
 - Fixed contextual filter macro matching so keyword filters and LLM concept filters now resolve `{{user}}` / `{{char}}` before matching, improving persona- and name-based trigger reliability.
 - Fixed a duplicate filter-context enrichment path in palette inject mode that could repeat character/profile blocks inside LLM filter matching requests and muddy concept detection.

@@ -1080,7 +1080,14 @@ function buildProxyImagesPayload(prompt, negative, s, refImages, payloadMode, pr
     if (refImages.length > 0) {
         log(`Attaching ${refImages.length} reference image(s) to images/generations request`);
         refImages.forEach(img => log(`  ref image: ${img.substring(0, Math.min(img.length, 80))}${img.length > 80 ? "..." : ""} (${summarizeProxyRefImage(img)})`));
-        payload.image = refImages;
+        // OpenAI-compatible image proxies are inconsistent here:
+        // Airforce's own image playground posts `image_urls`, while some other
+        // proxy stacks still look for the older `image` field.
+        payload.image_urls = refImages;
+        if (payloadMode !== "openai_strict") {
+            payload.image = refImages;
+        }
+        log(`Proxy ref payload fields: ${payloadMode === "openai_strict" ? "image_urls" : "image_urls, image"}`);
     }
 
     return payload;

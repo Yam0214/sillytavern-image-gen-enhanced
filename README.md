@@ -5,10 +5,15 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.8.6
+- Fixed a remaining palette inject fallback issue where one helper-LLM reply could produce several fallback `<image>` tags and trigger a short burst of multiple generations.
+- Palette inject fallback now asks for exactly one best visual moment and hard-caps helper-generated fallback tags to a single image even if the model ignores instructions.
+
 ## What's New in v1.8.5
 - Fixed LLM prompt `Prefill` so it now resolves macros like `{{char}}`, uses a standalone helper path with real prefill support when available, and no longer gets silently treated as a no-op.
 - Preserved meaningful name-based prefills instead of stripping them back out of the final prompt, helping character names survive into generated prompts for name-triggered contextual filters.
 - Added a right-click preset picker on the palette/QIG icon for quick preset switching without reopening the extension panel.
+- Palette inject fallback now asks for one best visual moment and caps helper-generated fallback tags to a single image, avoiding 5-image burst runs from one fallback response.
 
 ## What's New in v1.8.4
 - Fixed a continuous auto-generate loop when **Use LLM to create image prompt** was enabled and QIG's own helper LLM request was being treated like a fresh assistant reply.

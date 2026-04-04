@@ -10970,7 +10970,7 @@ async function generateImageInjectPalette() {
             const sceneContext = getMessages() || "the current scene";
             const injectInstruction = resolvePrompt(getInjectPromptTemplate(s));
             const timestamp = Date.now();
-            const fullInstruction = `${injectInstruction}\n\nBased on this scene context, generate image tags for the key visual moments. YOU MUST use the exact tag format shown above.\n\nScene context:\n${sceneContext}\n\nRespond with image tags only.\n\n[${timestamp}]`;
+            const fullInstruction = `${injectInstruction}\n\nBased on this scene context, generate exactly one image tag for the single best visual moment. YOU MUST use the exact tag format shown above. Return exactly one tag only. Do not generate multiple tags, lists, moments, or variants.\n\nScene context:\n${sceneContext}\n\nRespond with image tags only.\n\n[${timestamp}]`;
 
             let llmResponse;
             if (s.llmOverrideEnabled && s.llmOverrideProfileId) {
@@ -10988,7 +10988,10 @@ async function generateImageInjectPalette() {
             log(`Palette inject: LLM response: ${(llmResponse || "").substring(0, 200)}...`);
 
             if (llmResponse) {
-                matches = [...new Set(extractInjectMatchesFromText(llmResponse, regexPattern))];
+                matches = limitInjectFallbackMatches(
+                    extractInjectMatchesFromText(llmResponse, regexPattern),
+                    "Palette inject fallback"
+                );
             }
 
             if (matches.length === 0) {
@@ -11350,6 +11353,13 @@ function extractInjectMatchesFromText(text, regexPattern) {
         if (match[0] === "") regex.lastIndex++;
     }
     return matches;
+}
+
+function limitInjectFallbackMatches(matches, label = "Inject fallback") {
+    const normalized = [...new Set((matches || []).map(prompt => String(prompt || "").trim()).filter(Boolean))];
+    if (normalized.length <= 1) return normalized;
+    log(`${label}: Helper returned ${normalized.length} image tag(s); using only the first to avoid multi-image bursts`);
+    return normalized.slice(0, 1);
 }
 
 function getInjectCurrentSwipeText(message) {

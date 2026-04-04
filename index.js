@@ -81,6 +81,10 @@ function getInjectTagPreview(tagName = DEFAULT_INJECT_TAG_NAME) {
     return `<${safeTagName}>detailed visual description</${safeTagName}>`;
 }
 
+function normalizeOutputMode(value) {
+    return String(value || "").trim().toLowerCase() === "image_url" ? "image_url" : "inline";
+}
+
 const defaultSettings = {
     provider: "pollinations",
     style: "none",
@@ -106,6 +110,7 @@ const defaultSettings = {
     seed: -1,
     autoGenerate: false,
     autoInsert: false,
+    outputMode: "inline",
     insertAsHiddenReply: false,
     saveToServer: false,
     saveToServerEmbedMetadata: true,
@@ -1540,6 +1545,7 @@ async function loadSettings() {
     s.proxyPayloadMode = normalizeProxyPayloadSetting(s.proxyPayloadMode);
     s.proxyRefImageMode = normalizeProxyRefImageSetting(s.proxyRefImageMode);
     s.proxySse = normalizeProxySseSetting(s.proxySse);
+    s.outputMode = normalizeOutputMode(s.outputMode);
     // Restore localStorage stores from extensionSettings backup if localStorage was wiped
     const restoreTargets = [
         { localKey: "qig_templates", backupKey: "_backupTemplates", setter: v => { promptTemplates = v; } },
@@ -5293,7 +5299,50 @@ async function blobUrlToDataUrl(blobUrl) {
     });
 }
 
-async function insertImageIntoMessage(imageUrl, targetMessageIndex = null) {
+function isUrlBasedImageSource(url) {
+    const source = String(url || "").trim();
+    return !!source && !source.startsWith("data:") && !source.startsWith("blob:");
+}
+
+function toAbsoluteImageUrl(url) {
+    const source = String(url || "").trim();
+    if (!source) return "";
+    try {
+        return new URL(source, window.location?.origin || window.location?.href || "http://localhost/").href;
+    } catch {
+        return source;
+    }
+}
+
+async function resolveChatInsertImageUrl(entryOrUrl) {
+    const entry = normalizeGenerationEntry(entryOrUrl);
+    if (normalizeOutputMode(getSettings()?.outputMode) !== "image_url") {
+        return entry.url;
+    }
+
+    const candidateUrl = entry.sourceUrl || entry.url;
+    if (isUrlBasedImageSource(candidateUrl)) {
+        return toAbsoluteImageUrl(candidateUrl);
+    }
+    if (isUrlBasedImageSource(entry.url)) {
+        return toAbsoluteImageUrl(entry.url);
+    }
+    if (typeof saveBase64AsFile !== "function") {
+        throw new Error("image_url output requires SillyTavern file saving support");
+    }
+
+    const savedUrl = await saveImageToServer(entry.url, entry.prompt, entry.negative, {
+        ...cloneMetadataSettings(entry.metadataSettings || {}),
+        saveToServer: true,
+    });
+    if (!isUrlBasedImageSource(savedUrl)) {
+        throw new Error("Failed to create a server image URL");
+    }
+    entry.sourceUrl = savedUrl;
+    return toAbsoluteImageUrl(savedUrl);
+}
+
+async function insertImageIntoMessage(entryOrUrl, targetMessageIndex = null) {
     const ctx = getContext();
     const chat = ctx.chat;
     if (!chat || chat.length === 0) throw new Error("No messages in chat");
@@ -5307,17 +5356,17 @@ async function insertImageIntoMessage(imageUrl, targetMessageIndex = null) {
     const message = chat[idx];
     if (!message) throw new Error("Could not find target message");
 
-    // Convert blob URLs to data URLs for persistence
-    let url = imageUrl;
-    if (imageUrl.startsWith('blob:')) {
-        url = await blobUrlToDataUrl(imageUrl);
+    const entry = normalizeGenerationEntry(entryOrUrl);
+    let url = await resolveChatInsertImageUrl(entry);
+    if (url.startsWith('blob:')) {
+        url = await blobUrlToDataUrl(url);
     }
 
     if (!message.extra || typeof message.extra !== 'object') {
         message.extra = {};
     }
 
-    const title = lastPrompt || 'Generated Image';
+    const title = entry.prompt || lastPrompt || 'Generated Image';
 
     // Use modern media API if available
     if (typeof ctx.appendMediaToMessage === 'function') {
@@ -5351,17 +5400,18 @@ async function insertImageIntoMessage(imageUrl, targetMessageIndex = null) {
     await ctx.saveChat();
 }
 
-async function insertImageAsNewMessage(imageUrl) {
+async function insertImageAsNewMessage(entryOrUrl) {
     const ctx = getContext();
     const chat = ctx.chat;
     if (!chat) throw new Error("No active chat");
 
-    let url = imageUrl;
-    if (imageUrl.startsWith('blob:')) {
-        url = await blobUrlToDataUrl(imageUrl);
+    const entry = normalizeGenerationEntry(entryOrUrl);
+    let url = await resolveChatInsertImageUrl(entry);
+    if (url.startsWith('blob:')) {
+        url = await blobUrlToDataUrl(url);
     }
 
-    const title = lastPrompt || 'Generated Image';
+    const title = entry.prompt || lastPrompt || 'Generated Image';
     const message = {
         name: ctx.name2 || "Assistant",
         is_user: false,
@@ -5383,17 +5433,18 @@ async function insertImageAsNewMessage(imageUrl) {
     await ctx.saveChat();
 }
 
-async function insertImageAsHiddenReply(imageUrl) {
+async function insertImageAsHiddenReply(entryOrUrl) {
     const ctx = getContext();
     const chat = ctx.chat;
     if (!chat) throw new Error("No active chat");
 
-    let url = imageUrl;
-    if (imageUrl.startsWith('blob:')) {
-        url = await blobUrlToDataUrl(imageUrl);
+    const entry = normalizeGenerationEntry(entryOrUrl);
+    let url = await resolveChatInsertImageUrl(entry);
+    if (url.startsWith('blob:')) {
+        url = await blobUrlToDataUrl(url);
     }
 
-    const title = lastPrompt || 'Generated Image';
+    const title = entry.prompt || lastPrompt || 'Generated Image';
     const message = {
         name: ctx.name2 || "Assistant",
         is_user: false,
@@ -5415,16 +5466,16 @@ async function insertImageAsHiddenReply(imageUrl) {
     await ctx.saveChat();
 }
 
-async function autoInsertInjectImage(imageUrl, { messageIndex, insertMode } = {}) {
+async function autoInsertInjectImage(entryOrUrl, { messageIndex, insertMode } = {}) {
     const mode = insertMode || "replace";
-    if (mode === "hidden") return await insertImageAsHiddenReply(imageUrl);
+    if (mode === "hidden") return await insertImageAsHiddenReply(entryOrUrl);
     if (mode === "new") {
-        return await insertImageAsNewMessage(imageUrl);
+        return await insertImageAsNewMessage(entryOrUrl);
     }
     if (mode === "replace" && Number.isInteger(messageIndex)) {
-        return await insertImageIntoMessage(imageUrl, messageIndex);
+        return await insertImageIntoMessage(entryOrUrl, messageIndex);
     }
-    return await insertImageIntoMessage(imageUrl);
+    return await insertImageIntoMessage(entryOrUrl);
 }
 
 function shouldPersistImageUrl(url) {
@@ -5487,6 +5538,7 @@ function createGenerationEntry(url, prompt = lastPrompt, negative = lastNegative
     if (provider && !snapshot.provider) snapshot.provider = provider;
     return {
         url,
+        sourceUrl: options.sourceUrl ?? url,
         thumbnail: options.thumbnail ?? null,
         prompt: prompt || "",
         negative: negative || "",
@@ -5509,6 +5561,7 @@ function normalizeGenerationEntry(entryOrUrl, fallback = {}) {
     if (provider && !snapshot.provider) snapshot.provider = provider;
     return {
         ...entryOrUrl,
+        sourceUrl: entryOrUrl.sourceUrl ?? fallback.sourceUrl ?? entryOrUrl.url ?? fallback.url ?? "",
         prompt: entryOrUrl.prompt ?? fallback.prompt ?? "",
         negative: entryOrUrl.negative ?? fallback.negative ?? "",
         provider,
@@ -5527,7 +5580,7 @@ async function finalizeGeneratedEntry(rawUrl, prompt, negative, settings, option
     const finalUrl = await maybeFinalizeUrl(rawUrl, prompt, negative, metadataSettings);
     if (!finalUrl) return null;
     const stableUrl = metadataSettings.saveToServer ? finalUrl : await persistImageUrl(finalUrl);
-    return createGenerationEntry(stableUrl, prompt, negative, metadataSettings, options);
+    return createGenerationEntry(stableUrl, prompt, negative, metadataSettings, { ...options, sourceUrl: finalUrl });
 }
 
 async function addToGallery(entryOrUrl) {
@@ -5668,9 +5721,9 @@ function displayImage(entryOrUrl, skipGallery) {
             const s = getSettings();
             try {
                 if (s.insertAsHiddenReply) {
-                    await insertImageAsHiddenReply(entry.url);
+                    await insertImageAsHiddenReply(entry);
                 } else {
-                    await insertImageIntoMessage(entry.url);
+                    await insertImageIntoMessage(entry);
                 }
                 toastr.success("Image inserted into message");
             } catch (err) {
@@ -5870,7 +5923,7 @@ function displayBatchResults(results) {
         document.getElementById("qig-batch-insert-all").onclick = async (e) => {
             e.stopPropagation();
             try {
-                for (const entry of entries) await insertImageIntoMessage(entry.url);
+                for (const entry of entries) await insertImageIntoMessage(entry);
                 toastr.success(`Inserted ${entries.length} images into message`);
             } catch (err) {
                 console.error("[Quick Image Gen] Insert all failed:", err);
@@ -5904,7 +5957,7 @@ function displayBatchResults(results) {
         document.getElementById("qig-batch-insert").onclick = async (e) => {
             e.stopPropagation();
             try {
-                await insertImageIntoMessage(getCurrentEntry().url);
+                await insertImageIntoMessage(getCurrentEntry());
                 toastr.success("Image inserted into message");
             } catch (err) {
                 console.error("[Quick Image Gen] Insert failed:", err);
@@ -8809,6 +8862,7 @@ function refreshAllUI(s) {
         "qig-llm-style": "llmPromptStyle",
         "qig-llm-prefill": "llmPrefill",
         "qig-llm-custom": "llmCustomInstruction",
+        "qig-output-mode": "outputMode",
         "qig-inject-tag-name": "injectTagName",
         "qig-inject-prompt": "injectPrompt", "qig-inject-regex": "injectRegex",
         "qig-inject-position": "injectPosition", "qig-inject-depth": "injectDepth",
@@ -10156,6 +10210,12 @@ function createUI() {
                     <input id="qig-auto-insert" type="checkbox" ${s.autoInsert ? "checked" : ""}>
                     <span>Auto-insert into chat (skip popup)</span>
                 </label>
+                <label>Chat insert output</label>
+                <select id="qig-output-mode">
+                    <option value="inline" ${normalizeOutputMode(s.outputMode) === "inline" ? "selected" : ""}>Inline data URL</option>
+                    <option value="image_url" ${normalizeOutputMode(s.outputMode) === "image_url" ? "selected" : ""}>image_url (URL)</option>
+                </select>
+                <small style="opacity:0.6;font-size:10px;">Use <code>image_url</code> for URL-based chat media. If the provider only returns inline data, QIG will save the inserted image to the ST server automatically.</small>
                 <label class="checkbox_label" style="margin-left:16px;opacity:${s.autoInsert ? "1" : "0.6"};">
                     <input id="qig-insert-hidden-reply" type="checkbox" ${s.insertAsHiddenReply ? "checked" : ""} ${s.autoInsert ? "" : "disabled"}>
                     <span>Send as hidden reply (prevents payload errors)</span>
@@ -10820,6 +10880,13 @@ function createUI() {
     bindAutoGenerateCheckbox("qig-inject-auto-generate");
     syncCheckboxGroup(["qig-auto-generate", "qig-inject-auto-generate"], !!getSettings().autoGenerate);
     bindCheckbox("qig-auto-insert", "autoInsert");
+    const outputModeEl = document.getElementById("qig-output-mode");
+    if (outputModeEl) {
+        outputModeEl.onchange = (e) => {
+            getSettings().outputMode = normalizeOutputMode(e.target.value);
+            saveSettingsDebounced();
+        };
+    }
     const hiddenReplyEl = document.getElementById("qig-insert-hidden-reply");
     bindCheckbox("qig-insert-hidden-reply", "insertAsHiddenReply");
     document.getElementById("qig-auto-insert").addEventListener("change", e => {
@@ -11357,7 +11424,7 @@ async function generateImageInjectPalette() {
                         if (s.autoInsert) {
                             addToGallery(results[0]);
                             try {
-                                await autoInsertInjectImage(results[0].url, {
+                                await autoInsertInjectImage(results[0], {
                                     messageIndex: lastAiMessage?.index,
                                     insertMode: s.insertAsHiddenReply ? "hidden" : s.injectInsertMode,
                                 });
@@ -11530,9 +11597,9 @@ async function generateImage() {
                     addToGallery(r);
                     try {
                         if (s.insertAsHiddenReply) {
-                            await insertImageAsHiddenReply(r.url);
+                            await insertImageAsHiddenReply(r);
                         } else {
-                            await insertImageIntoMessage(r.url, lastCharIdx);
+                            await insertImageIntoMessage(r, lastCharIdx);
                         }
                     } catch (err) {
                         console.error("[Quick Image Gen] Auto-insert failed:", err);
@@ -12019,7 +12086,7 @@ async function processInjectMessage(messageText, messageIndex) {
                         if (s.autoInsert) {
                             addToGallery(results[0]);
                             try {
-                                await autoInsertInjectImage(results[0].url, {
+                                await autoInsertInjectImage(results[0], {
                                     messageIndex,
                                     insertMode: s.injectInsertMode,
                                 });

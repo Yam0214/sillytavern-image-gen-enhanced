@@ -5,6 +5,11 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.8.13
+- Added a new chat insert output mode with `Inline data URL` and `image_url (URL)` options for generated images.
+- `image_url` mode now auto-saves inserted images to the SillyTavern server when a provider only returned inline/base64 data, making URL-only vision consumers like Airdrop easier to feed automatically.
+- Manual insert, auto-insert, hidden replies, and inject-mode inserts now all share the same URL-resolution path for more consistent behavior.
+
 ## What's New in v1.8.11
 - Adjusted helper-LLM prompt building into a hybrid path: normal single-character chats now lean on the current card's own description, scenario, and tags again instead of only the broader resolved profile context.
 - Reduced the recent tendency for prompts to over-preserve generic active-card/world-card labels or force exact active-character names in one-on-one chats, helping actual character names and card-defined appearance details come through more naturally again.
@@ -152,6 +157,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 🔲 **Resizable Popup** - Drag the corner handle to resize the image popup
 - ⚡ **Auto-generate** - Generate after each AI response
 - 📥 **Auto-insert** - Skip popup and insert images directly into chat
+- 🔗 **Chat Output Modes** - Choose inline data URLs or `image_url` URL-based inserts for chat media; URL mode auto-saves inserted images to the ST server when needed
 - 💾 **Save to ST Server** - Optional auto-save for every generated image (persists across sessions)
 
 ### Advanced Features
@@ -221,6 +227,7 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | **Size** | Image dimensions (custom + NovelAI presets) |
 | **Auto-generate** | Generate after each AI response. Inject Mode auto-processing also uses this same toggle |
 | **Auto-insert** | Skip popup and insert images directly into chat |
+| **Chat insert output** | Choose inline data URLs or URL-based `image_url` chat media; URL mode auto-saves inserted images to the ST server when needed |
 | **Use ST Style** | Apply SillyTavern's Style panel settings (common prefix, negative, character-specific prompts) to generation |
 | **LLM Override** | Use a separate OpenAI-compatible API for image prompt generation (URL, key, model, temperature, max tokens, system prompt) |
 | **Inject Mode** | AI-driven generation — injects prompt into chat completion, extracts custom/legacy image tags from AI response or reasoning. For automatic inject processing, enable both Inject Mode and Auto-generate |

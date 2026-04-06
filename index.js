@@ -4084,7 +4084,7 @@ function mergeMeaningfulPrefillIntoLLMResult(result, prefill, profile) {
     return `${rawPrefill}${joiner}${baseResult}`.trim();
 }
 
-async function generateLLMPrompt(s, basePrompt, signal) {
+async function generateLLMPrompt(s, basePrompt, signal, options = {}) {
     if (!s.useLLMPrompt) return basePrompt;
 
     // Clear any cached styles before generating new prompt
@@ -4196,7 +4196,10 @@ async function generateLLMPrompt(s, basePrompt, signal) {
         const isNatural = s.llmPromptStyle === "natural";
         const wantsCustom = s.llmPromptStyle === "custom";
         const isCustom = wantsCustom && !!s.llmCustomInstruction?.trim();
-        const isMultiMessage = isSceneTranscriptPrompt(basePrompt);
+        const forcedMultiMessage = options?.isMultiMessageScene;
+        const isMultiMessage = forcedMultiMessage === true
+            ? true
+            : (forcedMultiMessage === false ? false : isSceneTranscriptPrompt(basePrompt));
         const multiMessageContextBlock = isMultiMessage
             ? `\nMULTI-MESSAGE SCENE CONTEXT:\n- The selected scene below is speaker-tagged context from the chosen chat messages.\n- Use it to infer one coherent visual moment.\n- Do NOT copy speaker labels, quote dialogue, or echo transcript lines in the output.\n- Convert the exchange into visual details only: subjects, actions, expressions, setting, camera framing, lighting, and mood.`
             : "";
@@ -6349,6 +6352,9 @@ function displayImage(entryOrUrl, skipGallery) {
     const entry = normalizeGenerationEntry(entryOrUrl);
     if (!entry.url) return;
     if (!skipGallery) addToGallery(entry);
+    const popupInsertTargetIndex = Number.isInteger(entry.sourceMessageIndex)
+        ? entry.sourceMessageIndex
+        : (!skipGallery && Number.isInteger(lastGenerationSourceMessageIndex) ? lastGenerationSourceMessageIndex : null);
 
     const imagePrompt = entry.prompt || "";
     const imageNegative = entry.negative || "";
@@ -6453,7 +6459,7 @@ function displayImage(entryOrUrl, skipGallery) {
                 if (s.insertAsHiddenReply) {
                     await insertImageAsHiddenReply(entry);
                 } else {
-                    await insertImageIntoMessage(entry);
+                    await insertImageIntoMessage(entry, popupInsertTargetIndex);
                 }
                 toastr.success("Image inserted into message");
             } catch (err) {
@@ -6503,7 +6509,10 @@ function displayImage(entryOrUrl, skipGallery) {
 }
 
 function displayBatchResults(results) {
-    const entries = results.map(result => normalizeGenerationEntry(result));
+    const batchFallbackSourceMessageIndex = Number.isInteger(lastGenerationSourceMessageIndex) ? lastGenerationSourceMessageIndex : null;
+    const entries = results.map(result => normalizeGenerationEntry(result, {
+        sourceMessageIndex: batchFallbackSourceMessageIndex,
+    }));
     if (!entries.length) return;
     entries.forEach(entry => addToGallery(entry));
 
@@ -6653,7 +6662,10 @@ function displayBatchResults(results) {
         document.getElementById("qig-batch-insert-all").onclick = async (e) => {
             e.stopPropagation();
             try {
-                for (const entry of entries) await insertImageIntoMessage(entry);
+                for (const entry of entries) {
+                    const insertTargetIndex = Number.isInteger(entry?.sourceMessageIndex) ? entry.sourceMessageIndex : batchFallbackSourceMessageIndex;
+                    await insertImageIntoMessage(entry, insertTargetIndex);
+                }
                 toastr.success(`Inserted ${entries.length} images into message`);
             } catch (err) {
                 console.error("[Quick Image Gen] Insert all failed:", err);
@@ -6689,7 +6701,9 @@ function displayBatchResults(results) {
         document.getElementById("qig-batch-insert").onclick = async (e) => {
             e.stopPropagation();
             try {
-                await insertImageIntoMessage(getCurrentEntry());
+                const activeEntry = getCurrentEntry();
+                const insertTargetIndex = Number.isInteger(activeEntry?.sourceMessageIndex) ? activeEntry.sourceMessageIndex : batchFallbackSourceMessageIndex;
+                await insertImageIntoMessage(activeEntry, insertTargetIndex);
                 toastr.success("Image inserted into message");
             } catch (err) {
                 console.error("[Quick Image Gen] Insert failed:", err);
@@ -12408,9 +12422,10 @@ async function generateImage() {
     const activeMessageTarget = getTransientGenerationTarget(ctx);
     const useChatMessageScene = shouldUseChatMessageScene(s);
     const selectedSceneEntries = useChatMessageScene ? getSceneMessageEntries(s, ctx) : [];
-    const sceneSelectionMessageIndex = selectedSceneEntries.length === 1 && Number.isInteger(selectedSceneEntries[0]?.index)
-        ? selectedSceneEntries[0].index
+    const sceneSelectionMessageIndex = selectedSceneEntries.length > 0 && Number.isInteger(selectedSceneEntries[selectedSceneEntries.length - 1]?.index)
+        ? selectedSceneEntries[selectedSceneEntries.length - 1].index
         : null;
+    const sceneSelectionIsMultiMessage = selectedSceneEntries.length > 1;
     const sourceMessageIndexForEntries = Number.isInteger(activeMessageTarget?.messageIndex)
         ? activeMessageTarget.messageIndex
         : sceneSelectionMessageIndex;
@@ -12465,7 +12480,9 @@ async function generateImage() {
     const batchCount = s.batchCount || 1;
     showStatus(`🎨 Generating ${batchCount} image(s)...`);
 
-    let prompt = await generateLLMPrompt(s, scenePrompt || basePrompt, currentAbortController?.signal);
+    let prompt = await generateLLMPrompt(s, scenePrompt || basePrompt, currentAbortController?.signal, {
+        isMultiMessageScene: sceneSelectionIsMultiMessage,
+    });
     checkAborted(cancelCheckpoint);
     lastPromptWasLLM = (s.useLLMPrompt && prompt !== (scenePrompt || basePrompt));
 

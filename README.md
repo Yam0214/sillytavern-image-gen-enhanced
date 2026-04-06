@@ -5,6 +5,10 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.8.19
+- Added a manual insert target setting, so Gallery inserts, Insert URL, and popup/manual insert actions can attach to the latest user message when you want to hand an image to the user.
+- Kept per-message Quick Image Gen actions targeted, so generating from a specific message still inserts back into that exact message instead of following the global fallback target.
+
 ## What's New in v1.8.18
 - Added a Quick Image Gen action on chat messages so manual generation can target a specific previous message in one click.
 - Manual generation now carries that targeted message through prompt building, proxy auto-reference images, and chat insertion.

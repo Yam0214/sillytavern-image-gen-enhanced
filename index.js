@@ -85,6 +85,12 @@ function normalizeOutputMode(value) {
     return String(value || "").trim().toLowerCase() === "image_url" ? "image_url" : "inline";
 }
 
+function normalizeManualInsertTarget(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (normalized === "user" || normalized === "latest") return normalized;
+    return "assistant";
+}
+
 const defaultSettings = {
     provider: "pollinations",
     style: "none",
@@ -111,6 +117,7 @@ const defaultSettings = {
     autoGenerate: false,
     autoInsert: false,
     outputMode: "inline",
+    manualInsertTarget: "assistant",
     insertAsHiddenReply: false,
     saveToServer: false,
     saveToServerEmbedMetadata: true,
@@ -1740,6 +1747,7 @@ async function loadSettings() {
     s.proxyRefImageMode = normalizeProxyRefImageSetting(s.proxyRefImageMode);
     s.proxySse = normalizeProxySseSetting(s.proxySse);
     s.outputMode = normalizeOutputMode(s.outputMode);
+    s.manualInsertTarget = normalizeManualInsertTarget(s.manualInsertTarget);
     // Restore localStorage stores from extensionSettings backup if localStorage was wiped
     const restoreTargets = [
         { localKey: "qig_templates", backupKey: "_backupTemplates", setter: v => { promptTemplates = v; } },
@@ -3090,6 +3098,34 @@ function getMessages(settings = getSettings(), ctx = getContext?.()) {
 
 function getSelectedSceneMessages(settings = getSettings(), ctx = getContext()) {
     return getSceneMessageEntries(settings, ctx);
+}
+
+function resolveManualInsertFallbackIndex(chat, settings = getSettings()) {
+    if (!Array.isArray(chat) || !chat.length) return null;
+
+    const fallbackCandidates = chat.map((_, index) => index);
+    if (!fallbackCandidates.length) return null;
+
+    const findLastCandidate = (predicate) => {
+        for (let i = fallbackCandidates.length - 1; i >= 0; i--) {
+            const index = fallbackCandidates[i];
+            if (predicate(chat[index], index)) return index;
+        }
+        return null;
+    };
+
+    const targetMode = normalizeManualInsertTarget(settings?.manualInsertTarget);
+    if (targetMode === "user") {
+        const lastUserIdx = findLastCandidate((message) => !!message?.is_user);
+        if (Number.isInteger(lastUserIdx)) return lastUserIdx;
+    } else if (targetMode === "latest") {
+        return fallbackCandidates[fallbackCandidates.length - 1];
+    } else {
+        const lastAssistantIdx = findLastCandidate((message) => !message?.is_user);
+        if (Number.isInteger(lastAssistantIdx)) return lastAssistantIdx;
+    }
+
+    return fallbackCandidates[fallbackCandidates.length - 1];
 }
 
 function extractMessageAttachedImageRefs(message) {
@@ -5889,12 +5925,7 @@ async function insertImageIntoMessage(entryOrUrl, targetMessageIndex = null) {
 
     const entry = normalizeGenerationEntry(entryOrUrl);
     const s = getSettings();
-    const indices = parseMessageRange(s.messageRange, chat.length);
-    const fallbackCandidates = indices.length > 0 ? indices : chat.map((_, index) => index);
-    const fallbackAssistantIdx = [...fallbackCandidates].reverse().find(index => !chat[index]?.is_user);
-    const fallbackIdx = Number.isInteger(fallbackAssistantIdx)
-        ? fallbackAssistantIdx
-        : (indices.length > 0 ? indices[indices.length - 1] : chat.length - 1);
+    const fallbackIdx = resolveManualInsertFallbackIndex(chat, s);
     const preferredEntryIdx = clampChatMessageIndex(entry.sourceMessageIndex, chat.length);
     const resolvedTargetIdx = clampChatMessageIndex(targetMessageIndex, chat.length);
     const idx = Number.isInteger(resolvedTargetIdx)
@@ -10871,6 +10902,13 @@ function createUI() {
                     <option value="image_url" ${normalizeOutputMode(s.outputMode) === "image_url" ? "selected" : ""}>image_url (URL)</option>
                 </select>
                 <small style="opacity:0.6;font-size:10px;">Use <code>image_url</code> for URL-based chat media. If the provider only returns inline data, QIG will save the inserted image to the ST server automatically.</small>
+                <label style="margin-top:6px;">Manual insert target</label>
+                <select id="qig-manual-insert-target">
+                    <option value="assistant" ${normalizeManualInsertTarget(s.manualInsertTarget) === "assistant" ? "selected" : ""}>Latest AI / non-user message</option>
+                    <option value="user" ${normalizeManualInsertTarget(s.manualInsertTarget) === "user" ? "selected" : ""}>Latest user message</option>
+                    <option value="latest" ${normalizeManualInsertTarget(s.manualInsertTarget) === "latest" ? "selected" : ""}>Latest chat message</option>
+                </select>
+                <small style="opacity:0.6;font-size:10px;">Used when inserting into chat without a specific target message. Per-message generation still inserts back into the message you targeted.</small>
                 <label class="checkbox_label" style="margin-left:16px;opacity:${s.autoInsert ? "1" : "0.6"};">
                     <input id="qig-insert-hidden-reply" type="checkbox" ${s.insertAsHiddenReply ? "checked" : ""} ${s.autoInsert ? "" : "disabled"}>
                     <span>Send as hidden reply (prevents payload errors)</span>
@@ -11539,6 +11577,13 @@ function createUI() {
     if (outputModeEl) {
         outputModeEl.onchange = (e) => {
             getSettings().outputMode = normalizeOutputMode(e.target.value);
+            saveSettingsDebounced();
+        };
+    }
+    const manualInsertTargetEl = document.getElementById("qig-manual-insert-target");
+    if (manualInsertTargetEl) {
+        manualInsertTargetEl.onchange = (e) => {
+            getSettings().manualInsertTarget = normalizeManualInsertTarget(e.target.value);
             saveSettingsDebounced();
         };
     }

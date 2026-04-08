@@ -9,7 +9,8 @@ function getRandomArtist(useTagFormat = false) {
 }
 
 const extensionName = "quick-image-gen";
-let extension_settings, getContext, saveSettingsDebounced, generateQuietPrompt, generateRaw, secret_state, rotateSecret, getRequestHeaders;
+let extension_settings, getContext, saveSettingsDebounced, generateQuietPrompt, generateRaw, generateRawData, createRawPrompt, secret_state, rotateSecret, getRequestHeaders;
+let createGenerationParameters, getChatCompletionModel;
 let saveBase64AsFile, getSanitizedFilename, humanizedDateTime;
 
 const DEFAULT_INJECT_TAG_NAME = "image";
@@ -593,36 +594,188 @@ async function callInternalQuietPrompt(instruction, { signal = null, quietName, 
     );
 }
 
+function canUseDirectMainChatRawRequest() {
+    const ctx = typeof getContext === "function" ? getContext() : null;
+    return Boolean(
+        ctx?.mainApi === "openai"
+        && typeof createRawPrompt === "function"
+        && typeof createGenerationParameters === "function"
+        && typeof getChatCompletionModel === "function"
+        && typeof getRequestHeaders === "function"
+    );
+}
+
+async function callDirectMainChatRawRequest(instruction, {
+    signal = null,
+    prefill = "",
+} = {}) {
+    if (!canUseDirectMainChatRawRequest()) {
+        throw new Error("direct main chat raw request is unavailable");
+    }
+
+    const ctx = getContext();
+    const settings = {
+        ...ctx.chatCompletionSettings,
+        show_thoughts: false,
+        enable_web_search: false,
+        request_images: false,
+        n: 1,
+    };
+    const model = getChatCompletionModel(settings);
+    if (!model) {
+        throw new Error("no active chat completion model is configured");
+    }
+
+    const prompt = createRawPrompt(instruction, "openai", false, false, "", String(prefill || ""));
+    if (!Array.isArray(prompt)) {
+        throw new Error("direct main chat prompt did not resolve to chat messages");
+    }
+
+    const { generate_data } = await createGenerationParameters(settings, model, "quiet", prompt);
+    delete generate_data.tools;
+    delete generate_data.tool_choice;
+
+    const response = await runAbortableTask(async () => {
+        const result = await fetch("/api/backends/chat-completions/generate", {
+            method: "POST",
+            headers: getRequestHeaders(),
+            cache: "no-cache",
+            body: JSON.stringify(generate_data),
+            signal,
+        });
+
+        if (!result.ok) {
+            const message = await result.text().catch(() => "");
+            throw new Error(message || `chat-completions request failed with status ${result.status}`);
+        }
+
+        const data = await result.json();
+        if (data?.error) {
+            throw new Error(data.error.message || "chat-completions request returned an error");
+        }
+        return data;
+    }, signal);
+
+    return {
+        ...extractLLMResponseDetails(response),
+        route: "main_chat_ai",
+        requestMethod: "directChatCompletions",
+    };
+}
+
 async function callInternalStandaloneLLM(instruction, {
     signal = null,
     quietName,
     label = "internal standalone prompt",
     prefill = "",
+    returnMeta = false,
 } = {}) {
     const requestLabel = String(label || quietName || "internal standalone prompt");
     const resolvedPrefill = String(prefill || "");
+    let attemptedDirectRawRequest = false;
+
+    const maybeCallDirectMainChatRawRequest = async () => {
+        if (attemptedDirectRawRequest || !canUseDirectMainChatRawRequest()) return null;
+        attemptedDirectRawRequest = true;
+        try {
+            const meta = await callDirectMainChatRawRequest(instruction, {
+                signal,
+                prefill: resolvedPrefill,
+            });
+            if (meta?.text) {
+                return meta;
+            }
+            logLLMHelperResponseMeta(meta, `${requestLabel}: direct backend response`);
+            log(`${requestLabel}: direct backend returned no text, using quiet prompt fallback`);
+        } catch (e) {
+            if (e.name === "AbortError") throw e;
+            log(`${requestLabel}: direct backend request failed: ${e.message}, using quiet prompt fallback`);
+        }
+        return null;
+    };
 
     return await runWithInternalLLMRequest(requestLabel, async () => {
-        if (typeof generateRaw === "function") {
+        if (returnMeta && typeof generateRawData === "function") {
             try {
-                return await runAbortableTask(() => generateRaw({
+                const response = await runAbortableTask(() => generateRawData({
+                    prompt: instruction,
+                    quietToLoud: false,
+                    prefill: resolvedPrefill,
+                }), signal);
+                const details = extractLLMResponseDetails(response);
+                const meta = {
+                    ...details,
+                    route: "main_chat_ai",
+                    requestMethod: "generateRawData",
+                };
+                if (details.text) {
+                    return returnMeta ? meta : details.text;
+                }
+                logLLMHelperResponseMeta(meta, `${requestLabel}: generateRawData response`);
+                const directMeta = await maybeCallDirectMainChatRawRequest();
+                if (directMeta?.text) {
+                    return returnMeta ? directMeta : directMeta.text;
+                }
+                log(`${requestLabel}: generateRawData returned no text, using quiet prompt fallback`);
+            } catch (e) {
+                if (e.name === "AbortError") throw e;
+                const directMeta = await maybeCallDirectMainChatRawRequest();
+                if (directMeta?.text) {
+                    return returnMeta ? directMeta : directMeta.text;
+                }
+                log(`${requestLabel}: generateRawData failed: ${e.message}, using quiet prompt fallback`);
+            }
+        } else if (typeof generateRaw === "function") {
+            try {
+                const text = await runAbortableTask(() => generateRaw({
                     prompt: instruction,
                     quietToLoud: false,
                     trimNames: false,
                     prefill: resolvedPrefill,
                 }), signal);
+                const meta = {
+                    text,
+                    route: "main_chat_ai",
+                    sourcePath: "response",
+                    extractionStatus: text ? "text" : "empty_string",
+                    finishReason: null,
+                    responseShape: summarizeLLMValueShape(text),
+                    contentShape: summarizeLLMValueShape(text),
+                    requestMethod: "generateRaw",
+                };
+                return returnMeta ? meta : text;
             } catch (e) {
                 if (e.name === "AbortError") throw e;
+                const directMeta = await maybeCallDirectMainChatRawRequest();
+                if (directMeta?.text) {
+                    return returnMeta ? directMeta : directMeta.text;
+                }
                 log(`${requestLabel}: generateRaw failed: ${e.message}, using quiet prompt fallback`);
             }
         }
 
-        return await runInternalQuietPromptRequest(instruction, {
+        const directMeta = await maybeCallDirectMainChatRawRequest();
+        if (directMeta?.text) {
+            return returnMeta ? directMeta : directMeta.text;
+        }
+
+        const fallbackText = await runInternalQuietPromptRequest(instruction, {
             signal,
             quietName,
             requestLabel: `${requestLabel} fallback`,
             prefill: resolvedPrefill,
         });
+        const fallbackMeta = {
+            text: fallbackText,
+            route: "main_chat_ai",
+            sourcePath: "response",
+            extractionStatus: fallbackText ? "text" : "empty_string",
+            finishReason: null,
+            responseShape: summarizeLLMValueShape(fallbackText),
+            contentShape: summarizeLLMValueShape(fallbackText),
+            requestMethod: "generateQuietPrompt",
+        };
+        return returnMeta ? fallbackMeta : fallbackText;
     });
 }
 
@@ -3747,9 +3900,16 @@ function extractLLMResponseDetails(response) {
     const candidates = [
         { label: "content", value: response.content },
         { label: "choices[0].message.content", value: response.choices?.[0]?.message?.content },
+        { label: "choices[0].message.tool_plan", value: response.choices?.[0]?.message?.tool_plan },
         { label: "choices[0].text", value: response.choices?.[0]?.text },
         { label: "message.content", value: response.message?.content },
+        { label: "message.tool_plan", value: response.message?.tool_plan },
+        { label: "responseContent.parts", value: response.responseContent?.parts },
+        { label: "candidates[0].content.parts", value: response.candidates?.[0]?.content?.parts },
+        { label: "candidates[0].content", value: response.candidates?.[0]?.content },
         { label: "text", value: response.text },
+        { label: "response", value: response.response },
+        { label: "[0].content", value: response?.[0]?.content },
         { label: "output_text", value: response.output_text },
         { label: "output[0].content", value: response.output?.[0]?.content },
         { label: "output", value: response.output },
@@ -3821,6 +3981,7 @@ function logLLMHelperResponseMeta(meta, label = "LLM helper") {
     if (!meta || typeof meta !== "object") return;
     const parts = [`route=${getLLMHelperRouteDescription(meta.route)}`];
     if (meta.sourcePath) parts.push(`source=${meta.sourcePath}`);
+    if (meta.requestMethod) parts.push(`method=${meta.requestMethod}`);
     if (meta.extractionStatus) parts.push(`extraction=${meta.extractionStatus}`);
     if (meta.finishReason) parts.push(`finish_reason=${meta.finishReason}`);
     if (Number.isFinite(meta.requestedMaxTokens)) parts.push(`max_tokens=${meta.requestedMaxTokens}`);
@@ -4385,21 +4546,14 @@ Tags:`;
             });
             llmPrompt = helperResponseMeta?.text || "";
         } else {
-            llmPrompt = await callInternalStandaloneLLM(instructionWithEntropy, {
+            helperResponseMeta = await callInternalStandaloneLLM(instructionWithEntropy, {
                 signal,
                 quietName: `ImageGen_${timestamp}`,
                 label: "image prompt generation request",
                 prefill: resolvedPrefill,
+                returnMeta: true,
             });
-            helperResponseMeta = {
-                text: llmPrompt,
-                route: "main_chat_ai",
-                sourcePath: "response",
-                extractionStatus: llmPrompt ? "text" : "empty_string",
-                finishReason: null,
-                responseShape: summarizeLLMValueShape(llmPrompt),
-                contentShape: summarizeLLMValueShape(llmPrompt),
-            };
+            llmPrompt = helperResponseMeta?.text || "";
         }
 
         checkAborted(); // Check immediately after LLM call returns
@@ -13125,7 +13279,17 @@ jQuery(function () {
             saveSettingsDebounced = scriptModule.saveSettingsDebounced;
             generateQuietPrompt = scriptModule.generateQuietPrompt;
             generateRaw = scriptModule.generateRaw;
+            generateRawData = scriptModule.generateRawData;
+            createRawPrompt = scriptModule.createRawPrompt;
             getRequestHeaders = scriptModule.getRequestHeaders;
+
+            try {
+                const openAICompatModule = await import("../../../openai.js");
+                createGenerationParameters = openAICompatModule.createGenerationParameters;
+                getChatCompletionModel = openAICompatModule.getChatCompletionModel;
+            } catch (e) {
+                console.warn("[ImageGen] Could not import OpenAI helpers:", e.message);
+            }
 
             try {
                 const utilsModule = await import("../../../utils.js");

@@ -123,7 +123,6 @@ const defaultSettings = {
     saveToServer: false,
     saveToServerEmbedMetadata: true,
     disablePaletteButton: false,
-    paletteMode: "direct",
     confirmBeforeGenerate: false,
     enableParagraphPicker: false,
     batchCount: 1,
@@ -290,8 +289,9 @@ const defaultSettings = {
     comfyFluxClipModel2: "",
     comfyFluxVaeModel: "",
     comfyFluxClipType: "flux",
+    _replacementMapsMigrated: false,
+    _legacyTemplatesIgnored: false,
     // Backups of localStorage stores (survive browser storage wipes)
-    _backupTemplates: null,
     _backupCharSettings: null,
     _backupProfiles: null,
     _backupCharRefImages: null,
@@ -299,11 +299,9 @@ const defaultSettings = {
     _backupComfyWorkflows: null,
     _backupContextualFilters: null,
     _backupFilterPools: null,
+    _backupActiveFilterPoolIdsByCard: null,
     _backupActiveFilterPoolIdsGlobal: null,
     _backupActiveFilterPoolIdsByChar: null,
-    _backupPromptReplacements: null,
-    _backupActivePromptReplacementIdsGlobal: null,
-    _backupActivePromptReplacementIdsByChar: null,
 };
 
 let lastPrompt = "";
@@ -331,7 +329,6 @@ function safeSetStorage(key, value, errorMessage = "") {
 }
 // Backup mapping: localStorage key → extensionSettings backup key
 const BACKUP_KEYS = {
-    qig_templates: "_backupTemplates",
     qig_char_settings: "_backupCharSettings",
     qig_profiles: "_backupProfiles",
     qig_char_ref_images: "_backupCharRefImages",
@@ -342,9 +339,6 @@ const BACKUP_KEYS = {
     qig_active_pool_ids_global: "_backupActiveFilterPoolIdsGlobal",
     qig_active_pool_ids_by_card: "_backupActiveFilterPoolIdsByCard",
     qig_active_pool_ids_by_char: "_backupActiveFilterPoolIdsByChar",
-    qig_prompt_replacements: "_backupPromptReplacements",
-    qig_active_prompt_replacement_ids_global: "_backupActivePromptReplacementIdsGlobal",
-    qig_active_prompt_replacement_ids_by_char: "_backupActivePromptReplacementIdsByChar",
 };
 function backupToSettings(localKey, data) {
     const backupKey = BACKUP_KEYS[localKey];
@@ -386,7 +380,6 @@ function generateUUID() {
 
 let sessionGallery = safeParse("qig_gallery", []);
 let promptHistory = safeParse("qig_prompt_history", []);
-let promptTemplates = safeParse("qig_templates", []);
 let charSettings = safeParse("qig_char_settings", {});
 let connectionProfiles = safeParse("qig_profiles", {});
 let charRefImages = safeParse("qig_char_ref_images", {});
@@ -397,9 +390,6 @@ let filterPools = safeParse("qig_filter_pools", []);
 let activeFilterPoolIdsGlobal = safeParse("qig_active_pool_ids_global", []);
 let activeFilterPoolIdsByCard = safeParse("qig_active_pool_ids_by_card", {});
 let activeFilterPoolIdsByChar = safeParse("qig_active_pool_ids_by_char", {});
-let promptReplacements = safeParse("qig_prompt_replacements", []);
-let activePromptReplacementIdsGlobal = safeParse("qig_active_prompt_replacement_ids_global", []);
-let activePromptReplacementIdsByChar = safeParse("qig_active_prompt_replacement_ids_by_char", {});
 let selectedComfyWorkflowId = "";
 let isGenerating = false;
 const blobUrls = new Set();
@@ -415,8 +405,6 @@ let _suppressAutoGenerateUntil = 0;
 let _lastAutoGenerateSuppressionLogTs = 0;
 let paletteGenerateLockUntil = 0;
 let paletteCancelLockUntil = 0;
-let _paletteInjectActive = false;
-let _paletteInjectSerial = 0;
 let _palettePresetMenuCleanup = null;
 let transientGenerationTarget = null;
 let qigMessageActionObserver = null;
@@ -1997,10 +1985,150 @@ function requestGenerationCancel() {
     return true;
 }
 
+function cleanupLegacyTemplateStores(settings = getSettings()) {
+    const s = settings || getSettings();
+    if (!s || s._legacyTemplatesIgnored) return false;
+
+    let changed = false;
+    if (localStorage.getItem("qig_templates") != null) {
+        localStorage.removeItem("qig_templates");
+        changed = true;
+    }
+    if (s._backupTemplates != null) {
+        s._backupTemplates = null;
+        changed = true;
+    }
+    s._legacyTemplatesIgnored = true;
+    return changed;
+}
+
+function buildMigratedReplacementFilter(rule) {
+    if (!rule || typeof rule !== "object") return null;
+
+    const trigger = String(rule.trigger || "").trim();
+    const replacement = String(rule.replacement || "").trim();
+    if (!trigger || !replacement) return null;
+
+    const scopeInfo = getNormalizedScopedRecord(rule.scope, {
+        charId: rule.charId,
+        cardKey: rule.cardKey,
+        cardLabel: rule.cardLabel,
+    });
+    const priority = Number(rule.priority);
+    const target = rule.target === "positive" || rule.target === "negative" || rule.target === "both"
+        ? rule.target
+        : "both";
+    const migrated = {
+        id: generateUUID(),
+        name: `Migrated: ${String(rule.name || "Replacement map").trim() || "Replacement map"}`,
+        enabled: rule.enabled !== false,
+        keywords: trigger,
+        matchMode: "OR",
+        description: "",
+        positive: target === "negative" ? "" : replacement,
+        negative: target === "positive" ? "" : replacement,
+        removePositive: target === "negative" ? "" : trigger,
+        removeNegative: target === "positive" ? "" : trigger,
+        removeMode: "remove",
+        priority: Number.isFinite(priority) ? Math.trunc(priority) : 0,
+        scope: scopeInfo.scope,
+        charId: scopeInfo.charId,
+        cardKey: scopeInfo.cardKey,
+        cardLabel: scopeInfo.cardLabel,
+        poolIds: [DEFAULT_FILTER_POOL_ID],
+        seedOverride: null,
+        sortOrder: null,
+        createdAt: rule.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+    };
+    return migrated;
+}
+
+function migratePromptReplacementsToFilters(rules, {
+    settings = getSettings(),
+    persist = false,
+    sourceLabel = "saved settings",
+} = {}) {
+    const incoming = Array.isArray(rules) ? rules : [];
+    if (!incoming.length) return { migratedCount: 0, addedCount: 0 };
+
+    const migrated = incoming
+        .map(buildMigratedReplacementFilter)
+        .filter(Boolean);
+    if (!migrated.length) {
+        if (settings && sourceLabel === "saved settings") {
+            settings._replacementMapsMigrated = true;
+        }
+        return { migratedCount: 0, addedCount: 0 };
+    }
+
+    contextualFilters.push(...migrated);
+    normalizeContextualFilterOrder(contextualFilters);
+    ensureFilterPoolsState({ persist });
+
+    if (settings && sourceLabel === "saved settings") {
+        settings._replacementMapsMigrated = true;
+    }
+
+    log(`Migrated ${migrated.length} prompt replacement map(s) from ${sourceLabel} into contextual filters`);
+    return {
+        migratedCount: incoming.length,
+        addedCount: migrated.length,
+    };
+}
+
+function migrateLegacyReplacementStores(settings = getSettings()) {
+    const s = settings || getSettings();
+    if (!s || s._replacementMapsMigrated) return false;
+
+    const storedRules = [];
+    const seenKeys = new Set();
+    const appendRules = (value) => {
+        if (!Array.isArray(value)) return;
+        for (const rule of value) {
+            if (!rule || typeof rule !== "object") continue;
+            const key = JSON.stringify([
+                rule.name || "",
+                rule.scope || "",
+                rule.charId || "",
+                rule.target || "",
+                rule.trigger || "",
+                rule.replacement || "",
+                rule.priority || 0,
+            ]);
+            if (seenKeys.has(key)) continue;
+            seenKeys.add(key);
+            storedRules.push(rule);
+        }
+    };
+
+    appendRules(safeParse("qig_prompt_replacements", []));
+    appendRules(s._backupPromptReplacements);
+
+    if (storedRules.length) {
+        migratePromptReplacementsToFilters(storedRules, {
+            settings: s,
+            persist: true,
+            sourceLabel: "saved settings",
+        });
+    } else {
+        s._replacementMapsMigrated = true;
+    }
+
+    localStorage.removeItem("qig_prompt_replacements");
+    localStorage.removeItem("qig_active_prompt_replacement_ids_global");
+    localStorage.removeItem("qig_active_prompt_replacement_ids_by_char");
+    s._backupPromptReplacements = null;
+    s._backupActivePromptReplacementIdsGlobal = null;
+    s._backupActivePromptReplacementIdsByChar = null;
+    return storedRules.length > 0;
+}
+
 async function loadSettings() {
     const saved = extension_settings[extensionName];
     extension_settings[extensionName] = { ...defaultSettings, ...saved };
     const s = extension_settings[extensionName];
+    delete s.paletteMode;
     const savedTagName = getInjectTagName(saved);
     s.injectTagName = savedTagName;
     // Migrate old messageIndex to messageRange
@@ -2023,9 +2151,9 @@ async function loadSettings() {
     s.proxySse = normalizeProxySseSetting(s.proxySse);
     s.outputMode = normalizeOutputMode(s.outputMode);
     s.manualInsertTarget = normalizeManualInsertTarget(s.manualInsertTarget);
+    cleanupLegacyTemplateStores(s);
     // Restore localStorage stores from extensionSettings backup if localStorage was wiped
     const restoreTargets = [
-        { localKey: "qig_templates", backupKey: "_backupTemplates", setter: v => { promptTemplates = v; } },
         { localKey: "qig_char_settings", backupKey: "_backupCharSettings", setter: v => { charSettings = v; } },
         { localKey: "qig_profiles", backupKey: "_backupProfiles", setter: v => { connectionProfiles = v; } },
         { localKey: "qig_char_ref_images", backupKey: "_backupCharRefImages", setter: v => { charRefImages = v; } },
@@ -2036,9 +2164,6 @@ async function loadSettings() {
         { localKey: "qig_active_pool_ids_global", backupKey: "_backupActiveFilterPoolIdsGlobal", setter: v => { activeFilterPoolIdsGlobal = v; } },
         { localKey: "qig_active_pool_ids_by_card", backupKey: "_backupActiveFilterPoolIdsByCard", setter: v => { activeFilterPoolIdsByCard = v; } },
         { localKey: "qig_active_pool_ids_by_char", backupKey: "_backupActiveFilterPoolIdsByChar", setter: v => { activeFilterPoolIdsByChar = v; } },
-        { localKey: "qig_prompt_replacements", backupKey: "_backupPromptReplacements", setter: v => { promptReplacements = v; } },
-        { localKey: "qig_active_prompt_replacement_ids_global", backupKey: "_backupActivePromptReplacementIdsGlobal", setter: v => { activePromptReplacementIdsGlobal = v; } },
-        { localKey: "qig_active_prompt_replacement_ids_by_char", backupKey: "_backupActivePromptReplacementIdsByChar", setter: v => { activePromptReplacementIdsByChar = v; } },
     ];
     let restoredCount = 0;
     for (const { localKey, backupKey, setter } of restoreTargets) {
@@ -2077,7 +2202,8 @@ async function loadSettings() {
     ensureGenerationPresetIds({ persist: true });
     syncActiveGenerationPresetSetting({ persist: true });
     ensureFilterPoolsState({ persist: true });
-    ensurePromptReplacementState({ persist: true });
+    migrateLegacyReplacementStores(s);
+    saveSettingsDebounced?.();
 }
 
 function normalizePoolIdList(poolIds) {
@@ -2397,140 +2523,6 @@ function ensureFilterPoolsState({ persist = false } = {}) {
         persistFilterPoolState();
     }
     return changed;
-}
-
-function buildPromptReplacementActiveStateFromRules(rules = promptReplacements) {
-    const globalIds = [];
-    const byChar = {};
-    for (const rule of (rules || [])) {
-        if (!rule?.enabled || !rule?.id) continue;
-        if (rule.scope === "char") {
-            const key = String(rule.charId || "");
-            if (!key) continue;
-            if (!byChar[key]) byChar[key] = [];
-            byChar[key].push(rule.id);
-        } else {
-            globalIds.push(rule.id);
-        }
-    }
-    return {
-        globalIds: normalizePoolIdList(globalIds),
-        byChar: Object.fromEntries(
-            Object.entries(byChar)
-                .map(([charId, ids]) => [charId, normalizePoolIdList(ids)])
-                .filter(([, ids]) => ids.length > 0)
-        ),
-    };
-}
-
-function savePromptReplacementActiveState() {
-    const okGlobal = safeSetStorage("qig_active_prompt_replacement_ids_global", JSON.stringify(activePromptReplacementIdsGlobal), "Failed to save global replacement map states. Browser storage may be full.");
-    const okByChar = safeSetStorage("qig_active_prompt_replacement_ids_by_char", JSON.stringify(activePromptReplacementIdsByChar), "Failed to save character replacement map states. Browser storage may be full.");
-    if (okGlobal) backupToSettings("qig_active_prompt_replacement_ids_global", activePromptReplacementIdsGlobal);
-    if (okByChar) backupToSettings("qig_active_prompt_replacement_ids_by_char", activePromptReplacementIdsByChar);
-    return okGlobal && okByChar;
-}
-
-function savePromptReplacements() {
-    const computed = buildPromptReplacementActiveStateFromRules(promptReplacements);
-    activePromptReplacementIdsGlobal = computed.globalIds;
-    activePromptReplacementIdsByChar = computed.byChar;
-    const okReplacements = safeSetStorage("qig_prompt_replacements", JSON.stringify(promptReplacements), "Failed to save prompt replacement maps. Browser storage may be full.");
-    if (okReplacements) backupToSettings("qig_prompt_replacements", promptReplacements);
-    const okState = savePromptReplacementActiveState();
-    return okReplacements && okState;
-}
-
-function ensurePromptReplacementState({ persist = false } = {}) {
-    let changed = false;
-    const incoming = Array.isArray(promptReplacements) ? promptReplacements : [];
-    if (!Array.isArray(promptReplacements)) changed = true;
-
-    const normalized = [];
-    const seenIds = new Set();
-    for (const raw of incoming) {
-        if (!raw || typeof raw !== "object") { changed = true; continue; }
-        let id = String(raw.id || "").trim();
-        if (!id || seenIds.has(id)) {
-            id = `qig_repl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-            changed = true;
-        }
-        let scope = (raw.scope === "char" || (raw.charId != null && raw.charId !== "")) ? "char" : "global";
-        let charId = raw.charId != null && raw.charId !== "" ? String(raw.charId) : null;
-        if (!charId && scope === "char") {
-            scope = "global";
-            changed = true;
-        }
-        if (scope === "global") charId = null;
-        const target = raw.target === "positive" || raw.target === "negative" || raw.target === "both" ? raw.target : "both";
-        const priorityValue = Number(raw.priority);
-        normalized.push({
-            id,
-            name: String(raw.name || "").trim() || "Untitled replacement",
-            enabled: raw.enabled !== false,
-            scope,
-            charId,
-            target,
-            trigger: String(raw.trigger || "").trim(),
-            replacement: String(raw.replacement || "").trim(),
-            priority: Number.isFinite(priorityValue) ? Math.trunc(priorityValue) : 0,
-            createdAt: raw.createdAt || new Date().toISOString(),
-            updatedAt: raw.updatedAt || new Date().toISOString(),
-        });
-        seenIds.add(id);
-    }
-    promptReplacements = normalized;
-
-    const globalIds = new Set(promptReplacements.filter(r => r.scope === "global").map(r => r.id));
-    const charIdsByChar = new Map();
-    for (const rule of promptReplacements) {
-        if (rule.scope !== "char" || !rule.charId) continue;
-        const key = String(rule.charId);
-        if (!charIdsByChar.has(key)) charIdsByChar.set(key, new Set());
-        charIdsByChar.get(key).add(rule.id);
-    }
-
-    const storedGlobal = normalizePoolIdList(activePromptReplacementIdsGlobal).filter(id => globalIds.has(id));
-    if (JSON.stringify(storedGlobal) !== JSON.stringify(normalizePoolIdList(activePromptReplacementIdsGlobal))) changed = true;
-
-    const incomingByChar = activePromptReplacementIdsByChar && typeof activePromptReplacementIdsByChar === "object" && !Array.isArray(activePromptReplacementIdsByChar)
-        ? activePromptReplacementIdsByChar
-        : {};
-    if (incomingByChar !== activePromptReplacementIdsByChar) changed = true;
-    const storedByChar = {};
-    for (const [charIdRaw, ids] of Object.entries(incomingByChar)) {
-        const key = String(charIdRaw);
-        const allowed = charIdsByChar.get(key);
-        if (!allowed?.size) continue;
-        const nextIds = normalizePoolIdList(ids).filter(id => allowed.has(id));
-        if (nextIds.length > 0) storedByChar[key] = nextIds;
-    }
-    if (JSON.stringify(storedByChar) !== JSON.stringify(incomingByChar)) changed = true;
-
-    const computed = buildPromptReplacementActiveStateFromRules(promptReplacements);
-    if (JSON.stringify(activePromptReplacementIdsGlobal) !== JSON.stringify(computed.globalIds)) changed = true;
-    if (JSON.stringify(activePromptReplacementIdsByChar) !== JSON.stringify(computed.byChar)) changed = true;
-    activePromptReplacementIdsGlobal = computed.globalIds;
-    activePromptReplacementIdsByChar = computed.byChar;
-
-    if (persist && changed) {
-        savePromptReplacements();
-    }
-    return changed;
-}
-
-function getPromptReplacementScopeRank(rule) {
-    return rule?.scope === "char" ? 1 : 0;
-}
-
-function comparePromptReplacements(a, b) {
-    const byPriority = (b.priority || 0) - (a.priority || 0);
-    if (byPriority !== 0) return byPriority;
-    const byScope = getPromptReplacementScopeRank(b) - getPromptReplacementScopeRank(a);
-    if (byScope !== 0) return byScope;
-    const byCreated = String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
-    if (byCreated !== 0) return byCreated;
-    return String(a.id || "").localeCompare(String(b.id || ""));
 }
 
 function getContextualFilterPriorityValue(filter) {
@@ -3079,20 +3071,6 @@ function enrichSceneTextForFilters(sceneText, label = "Contextual filters") {
         log(`${label}: enriched matching context (+${addedChars} chars)`);
     }
     return enriched;
-}
-
-function getActivePromptReplacements() {
-    ensurePromptReplacementState();
-    const activeCharIds = new Set(getActiveCharacterScopeIds());
-    return promptReplacements
-        .filter(rule => {
-            if (!rule?.enabled) return false;
-            if (rule.scope === "char") {
-                return !!rule.charId && activeCharIds.has(String(rule.charId));
-            }
-            return true;
-        })
-        .sort(comparePromptReplacements);
 }
 
 function getSettings() {
@@ -3686,92 +3664,6 @@ function getBatchBaseSeed(settings, batchCount, seedOverride = null) {
         baseSeed = generateRandomSeed();
     }
     return baseSeed;
-}
-
-function parsePromptReplacementTriggers(triggerText) {
-    return splitPromptTokens(triggerText)
-        .map(token => ({
-            raw: token,
-            identity: getPromptTokenIdentity(token),
-        }))
-        .filter(entry => entry.identity);
-}
-
-function applyPromptReplacementMaps(prompt, negative) {
-    const rules = getActivePromptReplacements();
-    if (!rules.length) return { prompt, negative, appliedCount: 0, replacedTokenCount: 0 };
-    let p = String(prompt || "");
-    let n = String(negative || "");
-    const consumedPositive = new Set();
-    const consumedNegative = new Set();
-    let appliedCount = 0;
-    let replacedTokenCount = 0;
-
-    const applyToField = (text, fieldKey, triggers, replacementText) => {
-        if (!triggers.length) return { text, matched: false, replaced: 0 };
-        const consumed = fieldKey === "positive" ? consumedPositive : consumedNegative;
-        const triggerIds = triggers.map(t => t.identity).filter(id => !consumed.has(id));
-        if (!triggerIds.length) return { text, matched: false, replaced: 0 };
-        const allowed = new Set(triggerIds);
-        const sourceTokens = splitPromptTokens(text);
-        if (!sourceTokens.length) return { text, matched: false, replaced: 0 };
-        let matched = false;
-        let replaced = 0;
-        const matchedIds = new Set();
-        const kept = [];
-        for (const token of sourceTokens) {
-            const identity = getPromptTokenIdentity(token);
-            if (identity && allowed.has(identity)) {
-                matched = true;
-                replaced += 1;
-                matchedIds.add(identity);
-            } else {
-                kept.push(token);
-            }
-        }
-        if (!matched) return { text, matched: false, replaced: 0 };
-        for (const id of matchedIds) consumed.add(id);
-        const next = appendPromptText(kept.join(", "), replacementText);
-        return { text: next, matched: true, replaced };
-    };
-
-    for (const rule of rules) {
-        const triggers = parsePromptReplacementTriggers(rule.trigger);
-        const replacementText = String(rule.replacement || "").trim();
-        if (!triggers.length || !replacementText) continue;
-        const target = rule.target || "both";
-        let ruleMatched = false;
-        let ruleReplacedTokens = 0;
-
-        if (target === "both" || target === "positive") {
-            const result = applyToField(p, "positive", triggers, replacementText);
-            p = result.text;
-            if (result.matched) {
-                ruleMatched = true;
-                ruleReplacedTokens += result.replaced;
-            }
-        }
-        if (target === "both" || target === "negative") {
-            const result = applyToField(n, "negative", triggers, replacementText);
-            n = result.text;
-            if (result.matched) {
-                ruleMatched = true;
-                ruleReplacedTokens += result.replaced;
-            }
-        }
-
-        if (ruleMatched) {
-            appliedCount += 1;
-            replacedTokenCount += ruleReplacedTokens;
-            const scopeLabel = rule.scope === "char" ? `char:${rule.charId}` : "global";
-            log(`Replacement map "${rule.name || "(unnamed)"}" [${scopeLabel}] p${rule.priority || 0} ${rule.target || "both"}: replaced ${ruleReplacedTokens} token(s) -> ${previewTextForLog(rule.replacement, 80)}`);
-        }
-    }
-
-    if (appliedCount > 0) {
-        log(`Replacement maps: ${appliedCount} applied (${replacedTokenCount} token(s) replaced)`);
-    }
-    return { prompt: p, negative: n, appliedCount, replacedTokenCount };
 }
 
 async function matchLLMFilters(sceneText, signal = null) {
@@ -7378,68 +7270,6 @@ async function regenerateImage() {
     }
 }
 
-// Prompt Templates
-function saveTemplate() {
-    const prompt = document.getElementById("qig-prompt").value;
-    const negative = document.getElementById("qig-negative").value;
-    const quality = document.getElementById("qig-quality").value;
-    if (!prompt.trim()) return;
-    const name = window.prompt("Template name:");
-    if (!name) return;
-    promptTemplates.unshift({ name, prompt, negative, quality });
-    promptTemplates = promptTemplates.slice(0, 20);
-    if (!safeSetStorage("qig_templates", JSON.stringify(promptTemplates), "Failed to save template. Browser storage may be full.")) return;
-    backupToSettings("qig_templates", promptTemplates);
-    renderTemplates();
-}
-
-function loadTemplate(i) {
-    const t = promptTemplates[i];
-    if (!t) return;
-    document.getElementById("qig-prompt").value = t.prompt || "";
-    document.getElementById("qig-negative").value = t.negative || "";
-    document.getElementById("qig-quality").value = t.quality || "";
-    const s = getSettings();
-    s.prompt = t.prompt || "";
-    s.negativePrompt = t.negative || "";
-    s.qualityTags = t.quality || "";
-    saveSettingsDebounced();
-}
-
-function deleteTemplate(i) {
-    promptTemplates.splice(i, 1);
-    if (!safeSetStorage("qig_templates", JSON.stringify(promptTemplates), "Failed to delete template. Browser storage may be full.")) return;
-    backupToSettings("qig_templates", promptTemplates);
-    renderTemplates();
-}
-
-function renderTemplates() {
-    const container = getOrCacheElement("qig-templates");
-    if (!container) return;
-    const html = promptTemplates.map((t, i) =>
-        `<span style="display:inline-flex;align-items:center;margin:2px;">` +
-        `<button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="loadTemplate(${i})">${escapeHtml(t.name || "")}</button>` +
-        `<button class="menu_button" style="padding:2px 4px;font-size:10px;margin-left:1px;" onclick="deleteTemplate(${i})">×</button></span>`
-    ).join('');
-    container.innerHTML = promptTemplates.length > 0
-        ? `<div style="max-height:120px;overflow-y:auto;margin-bottom:4px;">${html}</div>` +
-          `<button class="menu_button" style="padding:2px 6px;font-size:10px;margin:2px;" onclick="clearTemplates()">Clear All</button>`
-        : '';
-}
-
-window.loadTemplate = loadTemplate;
-window.deleteTemplate = deleteTemplate;
-window.clearTemplates = clearTemplates;
-
-function clearTemplates() {
-    if (confirm("Clear all templates?")) {
-        promptTemplates = [];
-        localStorage.removeItem("qig_templates");
-        backupToSettings("qig_templates", promptTemplates);
-        renderTemplates();
-    }
-}
-
 // === Contextual Filters (lorebook-style prompt injection) ===
 function saveContextualFilters() {
     safeSetStorage("qig_contextual_filters", JSON.stringify(contextualFilters), "Failed to save contextual filters. Browser storage may be full.");
@@ -8788,230 +8618,6 @@ function renderContextualFilters() {
     }
 }
 
-function showPromptReplacementDialog(rule) {
-    const isNew = !rule;
-    const r = rule || {
-        name: "",
-        scope: "global",
-        charId: null,
-        target: "both",
-        trigger: "",
-        replacement: "",
-        priority: 0,
-    };
-    const currentCharId = getCurrentCharId();
-    const charName = getCurrentCharName();
-    const editingDifferentChar = r.scope === "char" && r.charId && (!currentCharId || String(r.charId) !== String(currentCharId));
-    return new Promise((resolve) => {
-        const popup = createPopup("qig-replacement-dialog", isNew ? "Add Prompt Replacement Map" : "Edit Prompt Replacement Map", `
-            <div style="padding:12px;">
-                <label style="font-size:11px;">Name</label>
-                <input id="qig-rd-name" type="text" value="${escapeHtml(r.name || "")}" placeholder="e.g., Miranda character map" style="width:100%;margin-bottom:8px;">
-                <label style="font-size:11px;">Scope</label>
-                <select id="qig-rd-scope" style="width:100%;margin-bottom:8px;">
-                    <option value="global" ${(r.scope !== "char" || !r.charId) ? "selected" : ""}>Global (all characters)</option>
-                    ${currentCharId != null ? `<option value="char:${escapeHtml(String(currentCharId))}" ${r.scope === "char" && String(r.charId) === String(currentCharId) ? "selected" : ""}>This Character: ${escapeHtml(charName || "Unknown")}</option>` : ""}
-                    ${editingDifferentChar ? `<option value="char:${escapeHtml(String(r.charId))}" selected disabled>Other Character (${escapeHtml(String(r.charId))})</option>` : ""}
-                </select>
-                <label style="font-size:11px;">Target Field</label>
-                <select id="qig-rd-target" style="width:100%;margin-bottom:8px;">
-                    <option value="both" ${r.target === "both" ? "selected" : ""}>Both (Positive + Negative)</option>
-                    <option value="positive" ${r.target === "positive" ? "selected" : ""}>Positive Prompt only</option>
-                    <option value="negative" ${r.target === "negative" ? "selected" : ""}>Negative Prompt only</option>
-                </select>
-                <label style="font-size:11px;">Trigger Tokens (comma-separated, exact token match)</label>
-                <textarea id="qig-rd-trigger" style="width:100%;height:50px;resize:vertical;" placeholder="miranda, miranda_style">${escapeHtml(r.trigger || "")}</textarea>
-                <small style="display:block;opacity:0.65;font-size:10px;margin-bottom:8px;">Matches comma-separated prompt tokens exactly. LoRA tags match by name, weight-insensitive.</small>
-                <label style="font-size:11px;">Replacement Text</label>
-                <textarea id="qig-rd-replacement" style="width:100%;height:60px;resize:vertical;" placeholder="&lt;lora:miranda_v2:0.8&gt;, 1girl, miranda, detailed face">${escapeHtml(r.replacement || "")}</textarea>
-                <label style="font-size:11px;">Priority (higher runs first)</label>
-                <input id="qig-rd-priority" type="number" value="${r.priority || 0}" style="width:80px;margin-bottom:12px;">
-                <div style="display:flex;gap:8px;justify-content:flex-end;">
-                    <button id="qig-rd-cancel" class="menu_button">Cancel</button>
-                    <button id="qig-rd-save" class="menu_button">Save</button>
-                </div>
-            </div>`, (popup) => {
-            const close = (e) => {
-                e?.preventDefault?.();
-                e?.stopPropagation?.();
-                popup.style.display = "none";
-                resolve(null);
-            };
-            bindPopupDismiss(popup, close);
-            document.getElementById("qig-rd-name").focus();
-            document.getElementById("qig-rd-cancel").onclick = close;
-            document.getElementById("qig-rd-save").onclick = (e) => {
-                e?.preventDefault?.();
-                e?.stopPropagation?.();
-                const name = document.getElementById("qig-rd-name").value.trim();
-                const scopeVal = document.getElementById("qig-rd-scope").value;
-                const target = document.getElementById("qig-rd-target").value;
-                const trigger = document.getElementById("qig-rd-trigger").value.trim();
-                const replacement = document.getElementById("qig-rd-replacement").value.trim();
-                if (!name) { alert("Name is required."); return; }
-                if (!trigger) { alert("Trigger tokens are required."); return; }
-                if (!replacement) { alert("Replacement text is required."); return; }
-                let scope = "global";
-                let charId = null;
-                if (scopeVal.startsWith("char:")) {
-                    scope = "char";
-                    charId = scopeVal.slice(5) || null;
-                    if (!charId) {
-                        alert("Character scope requires an active character.");
-                        return;
-                    }
-                }
-                const priority = parseInt(document.getElementById("qig-rd-priority").value, 10) || 0;
-                popup.style.display = "none";
-                resolve({ name, scope, charId, target, trigger, replacement, priority });
-            };
-        });
-    });
-}
-
-async function addPromptReplacement() {
-    const result = await showPromptReplacementDialog(null);
-    if (!result) return;
-    const now = new Date().toISOString();
-    promptReplacements.push({
-        id: generateUUID(),
-        enabled: true,
-        createdAt: now,
-        updatedAt: now,
-        ...result,
-    });
-    ensurePromptReplacementState({ persist: true });
-    renderPromptReplacements();
-}
-
-async function editPromptReplacement(id) {
-    const rule = promptReplacements.find(x => x.id === id);
-    if (!rule) return;
-    const result = await showPromptReplacementDialog(rule);
-    if (!result) return;
-    Object.assign(rule, result, { updatedAt: new Date().toISOString() });
-    ensurePromptReplacementState({ persist: true });
-    renderPromptReplacements();
-}
-
-function deletePromptReplacement(id) {
-    const idx = promptReplacements.findIndex(x => x.id === id);
-    if (idx === -1) return;
-    promptReplacements.splice(idx, 1);
-    savePromptReplacements();
-    renderPromptReplacements();
-}
-
-function togglePromptReplacement(id) {
-    const rule = promptReplacements.find(x => x.id === id);
-    if (!rule) return;
-    rule.enabled = !rule.enabled;
-    rule.updatedAt = new Date().toISOString();
-    savePromptReplacements();
-    renderPromptReplacements();
-}
-
-function duplicatePromptReplacement(id) {
-    const rule = promptReplacements.find(x => x.id === id);
-    if (!rule) return;
-    const charId = getCurrentCharId();
-    const duplicateScope = rule.scope === "char" ? "global" : "char";
-    const duplicateCharId = duplicateScope === "char" ? (charId != null ? String(charId) : null) : null;
-    if (duplicateScope === "char" && !duplicateCharId) return;
-    const now = new Date().toISOString();
-    promptReplacements.push({
-        ...JSON.parse(JSON.stringify(rule)),
-        id: generateUUID(),
-        scope: duplicateScope,
-        charId: duplicateCharId,
-        createdAt: now,
-        updatedAt: now,
-    });
-    savePromptReplacements();
-    renderPromptReplacements();
-}
-
-function clearPromptReplacements() {
-    const currentCharId = getCurrentCharId();
-    const charName = getCurrentCharName();
-    if (currentCharId != null) {
-        const choice = prompt(
-            `Clear replacement maps — type a number:\n1) All replacement maps\n2) Global maps only\n3) ${charName || "This character"}'s maps only\n\nCancel to abort.`
-        );
-        if (!choice) return;
-        const n = parseInt(choice, 10);
-        if (n === 1) {
-            promptReplacements = [];
-        } else if (n === 2) {
-            promptReplacements = promptReplacements.filter(r => r.scope === "char");
-        } else if (n === 3) {
-            promptReplacements = promptReplacements.filter(r => !(r.scope === "char" && String(r.charId) === String(currentCharId)));
-        } else {
-            return;
-        }
-    } else {
-        if (!confirm("Clear all prompt replacement maps?")) return;
-        promptReplacements = [];
-    }
-    savePromptReplacements();
-    renderPromptReplacements();
-}
-
-function renderPromptReplacements() {
-    const container = document.getElementById("qig-prompt-replacements");
-    if (!container) return;
-    ensurePromptReplacementState();
-    const currentCharId = getCurrentCharId();
-    const charName = getCurrentCharName();
-    const globalRules = promptReplacements
-        .filter(r => r.scope !== "char")
-        .sort(comparePromptReplacements);
-    const charRules = currentCharId != null
-        ? promptReplacements
-            .filter(r => r.scope === "char" && String(r.charId) === String(currentCharId))
-            .sort(comparePromptReplacements)
-        : [];
-    const otherCount = promptReplacements.filter(r => r.scope === "char" && (!currentCharId || String(r.charId) !== String(currentCharId))).length;
-
-    const renderRow = (r) => {
-        const eId = escapeHtml(r.id || "");
-        const eName = escapeHtml(r.name || "");
-        const eTrigger = escapeHtml(r.trigger || "");
-        const eReplacement = escapeHtml(r.replacement || "");
-        const isGlobal = r.scope !== "char";
-        const badge = isGlobal
-            ? `<span style="background:#4a90d9;color:#fff;font-size:8px;font-weight:bold;padding:1px 3px;border-radius:2px;margin-right:2px;" title="Global map">G</span>`
-            : `<span style="background:#5cb85c;color:#fff;font-size:8px;font-weight:bold;padding:1px 3px;border-radius:2px;margin-right:2px;" title="Character map">C</span>`;
-        const targetLabel = r.target === "positive" ? "P" : r.target === "negative" ? "N" : "P+N";
-        return `<div style="display:flex;align-items:center;gap:4px;margin:2px 0;font-size:10px;${r.enabled ? "" : "opacity:0.72;"}">` +
-            `<input type="checkbox" ${r.enabled ? "checked" : ""} onchange="togglePromptReplacement('${eId}')" title="Enable/disable">` +
-            badge +
-            `<button class="menu_button" style="padding:2px 6px;font-size:10px;flex:1;text-align:left;" onclick="editPromptReplacement('${eId}')" title="Trigger: ${eTrigger}\nReplacement: ${eReplacement}\nPriority: ${r.priority || 0}\nTarget: ${targetLabel}">${eName}</button>` +
-            `<span style="opacity:0.6;font-size:9px;">${targetLabel} p${r.priority || 0}${r.enabled ? "" : " off"}</span>` +
-            `<button class="menu_button" style="padding:2px 4px;font-size:10px;" onclick="duplicatePromptReplacement('${eId}')" title="Duplicate to ${isGlobal ? 'character' : 'global'} scope">\u29C9</button>` +
-            `<button class="menu_button" style="padding:2px 4px;font-size:10px;" onclick="deletePromptReplacement('${eId}')">×</button>` +
-            `</div>`;
-    };
-
-    let html = "";
-    if (globalRules.length) {
-        html += `<div style="font-size:9px;font-weight:bold;opacity:0.7;margin:4px 0 2px;text-transform:uppercase;">Global Maps (${globalRules.length})</div>`;
-        html += globalRules.map(renderRow).join("");
-    }
-    if (charRules.length) {
-        html += `<div style="font-size:9px;font-weight:bold;opacity:0.7;margin:4px 0 2px;text-transform:uppercase;">${escapeHtml(charName || "Character")} Maps (${charRules.length})</div>`;
-        html += charRules.map(renderRow).join("");
-    }
-    if (otherCount > 0) {
-        html += `<div style="font-size:9px;opacity:0.5;margin:4px 0 2px;font-style:italic;">${otherCount} map(s) for other characters (hidden)</div>`;
-    }
-    if (!html) {
-        html = `<div style="font-size:10px;opacity:0.65;margin:4px 0;">No replacement maps yet. Add one to get started.</div>`;
-    }
-    container.innerHTML = `<div style="max-height:200px;overflow-y:auto;margin-bottom:4px;">${html}</div>
-        <button class="menu_button" style="padding:2px 6px;font-size:10px;margin:2px;" onclick="clearPromptReplacements()">Clear All</button>`;
-}
-
 window.addContextualFilter = addContextualFilter;
 window.editContextualFilter = editContextualFilter;
 window.deleteContextualFilter = deleteContextualFilter;
@@ -9032,12 +8638,6 @@ window.renameFilterPool = renameFilterPool;
 window.deleteFilterPool = deleteFilterPool;
 window.toggleFilterPool = toggleFilterPool;
 window.setVisiblePoolsEnabled = setVisiblePoolsEnabled;
-window.addPromptReplacement = addPromptReplacement;
-window.editPromptReplacement = editPromptReplacement;
-window.deletePromptReplacement = deletePromptReplacement;
-window.togglePromptReplacement = togglePromptReplacement;
-window.duplicatePromptReplacement = duplicatePromptReplacement;
-window.clearPromptReplacements = clearPromptReplacements;
 
 // Character-specific settings
 let charSettingsBaseState = null;
@@ -9400,7 +9000,6 @@ function loadCharSettings() {
         applyCharScopedState(charSettingsBaseState, s);
         saveSettingsDebounced();
         renderContextualFilters();
-        renderPromptReplacements();
         return false;
     }
 
@@ -9448,7 +9047,6 @@ function loadCharSettings() {
     renderNanogptRefImages();
     saveSettingsDebounced();
     renderContextualFilters();
-    renderPromptReplacements();
     return true;
 }
 
@@ -9712,13 +9310,10 @@ function savePreset() {
     preset.activeFilterPoolIdsGlobal = [...normalizePoolIdList(activeFilterPoolIdsGlobal)];
     preset.activeFilterPoolIdsByCard = JSON.parse(JSON.stringify(activeFilterPoolIdsByCard || {}));
     preset.activeFilterPoolIdsByChar = JSON.parse(JSON.stringify(activeFilterPoolIdsByChar || {}));
-    preset.promptReplacements = JSON.parse(JSON.stringify(promptReplacements));
-    preset.activePromptReplacementIdsGlobal = [...normalizePoolIdList(activePromptReplacementIdsGlobal)];
-    preset.activePromptReplacementIdsByChar = JSON.parse(JSON.stringify(activePromptReplacementIdsByChar || {}));
     // Include ST Style toggle state
     if (s.useSTStyle !== undefined) preset.useSTStyle = s.useSTStyle;
     // Include inject mode settings
-    const injectKeys = ["injectEnabled", "injectTagName", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean", "paletteMode"];
+    const injectKeys = ["injectEnabled", "injectTagName", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean"];
     injectKeys.forEach(k => { if (s[k] !== undefined) preset[k] = s[k]; });
     generationPresets.push(preset);
     if (!saveGenerationPresetStore()) return;
@@ -9749,23 +9344,19 @@ function loadPreset(i) {
     if (p.activeFilterPoolIdsByChar) {
         activeFilterPoolIdsByChar = JSON.parse(JSON.stringify(p.activeFilterPoolIdsByChar));
     }
-    if (p.promptReplacements) {
-        promptReplacements = JSON.parse(JSON.stringify(p.promptReplacements));
-    }
-    if (p.activePromptReplacementIdsGlobal) {
-        activePromptReplacementIdsGlobal = JSON.parse(JSON.stringify(p.activePromptReplacementIdsGlobal));
-    }
-    if (p.activePromptReplacementIdsByChar) {
-        activePromptReplacementIdsByChar = JSON.parse(JSON.stringify(p.activePromptReplacementIdsByChar));
+    if (Array.isArray(p.promptReplacements)) {
+        migratePromptReplacementsToFilters(p.promptReplacements, {
+            settings: s,
+            persist: false,
+            sourceLabel: `preset \"${p.name || "(unnamed)"}\"`,
+        });
     }
     ensureFilterPoolsState({ persist: true });
-    ensurePromptReplacementState({ persist: true });
     renderContextualFilters();
-    renderPromptReplacements();
     // Restore ST Style toggle
     if (p.useSTStyle !== undefined) { s.useSTStyle = p.useSTStyle; }
     // Restore inject mode settings
-    const injectKeys = ["injectEnabled", "injectTagName", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean", "paletteMode"];
+    const injectKeys = ["injectEnabled", "injectTagName", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean"];
     injectKeys.forEach(k => { if (p[k] !== undefined) s[k] = p[k]; });
     s.lastLoadedPresetId = p.id || "";
     saveSettingsDebounced();
@@ -9858,8 +9449,7 @@ function refreshAllUI(s) {
         "qig-inject-tag-name": "injectTagName",
         "qig-inject-prompt": "injectPrompt", "qig-inject-regex": "injectRegex",
         "qig-inject-position": "injectPosition", "qig-inject-depth": "injectDepth",
-        "qig-inject-insert-mode": "injectInsertMode",
-        "qig-palette-mode": "paletteMode"
+        "qig-inject-insert-mode": "injectInsertMode"
     };
     Object.entries(fields).forEach(([id, key]) => {
         const el = document.getElementById(id);
@@ -9888,7 +9478,6 @@ function refreshAllUI(s) {
     const injectDepthWrap = document.getElementById("qig-inject-depth-wrap");
     if (injectDepthWrap) injectDepthWrap.style.display = s.injectPosition === "atDepth" ? "block" : "none";
     renderContextualFilters();
-    renderPromptReplacements();
 }
 
 window.loadPreset = loadPreset;
@@ -9902,7 +9491,6 @@ function exportAllSettings() {
         exportDate: new Date().toISOString(),
         connectionProfiles,
         comfyWorkflows,
-        promptTemplates,
         generationPresets,
         charSettings,
         charRefImages,
@@ -9911,9 +9499,6 @@ function exportAllSettings() {
         activeFilterPoolIdsGlobal,
         activeFilterPoolIdsByCard,
         activeFilterPoolIdsByChar,
-        promptReplacements,
-        activePromptReplacementIdsGlobal,
-        activePromptReplacementIdsByChar,
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -9948,11 +9533,6 @@ function importSettings() {
                 comfyWorkflows = data.comfyWorkflows;
                 if (!safeSetStorage("qig_comfy_workflows", JSON.stringify(comfyWorkflows))) throw new Error("Could not save imported workflow presets. Browser storage may be full.");
                 backupToSettings("qig_comfy_workflows", comfyWorkflows);
-            }
-            if (data.promptTemplates) {
-                promptTemplates = data.promptTemplates;
-                if (!safeSetStorage("qig_templates", JSON.stringify(promptTemplates))) throw new Error("Could not save imported templates. Browser storage may be full.");
-                backupToSettings("qig_templates", promptTemplates);
             }
             if (data.generationPresets) {
                 generationPresets = data.generationPresets;
@@ -9995,29 +9575,18 @@ function importSettings() {
                 backupToSettings("qig_active_pool_ids_by_char", activeFilterPoolIdsByChar);
             }
             if (Array.isArray(data.promptReplacements)) {
-                promptReplacements = data.promptReplacements;
-                if (!safeSetStorage("qig_prompt_replacements", JSON.stringify(promptReplacements))) throw new Error("Could not save imported prompt replacement maps. Browser storage may be full.");
-                backupToSettings("qig_prompt_replacements", promptReplacements);
-            }
-            if (Array.isArray(data.activePromptReplacementIdsGlobal)) {
-                activePromptReplacementIdsGlobal = data.activePromptReplacementIdsGlobal;
-                if (!safeSetStorage("qig_active_prompt_replacement_ids_global", JSON.stringify(activePromptReplacementIdsGlobal))) throw new Error("Could not save imported global prompt replacement map states. Browser storage may be full.");
-                backupToSettings("qig_active_prompt_replacement_ids_global", activePromptReplacementIdsGlobal);
-            }
-            if (data.activePromptReplacementIdsByChar && typeof data.activePromptReplacementIdsByChar === "object") {
-                activePromptReplacementIdsByChar = data.activePromptReplacementIdsByChar;
-                if (!safeSetStorage("qig_active_prompt_replacement_ids_by_char", JSON.stringify(activePromptReplacementIdsByChar))) throw new Error("Could not save imported character prompt replacement map states. Browser storage may be full.");
-                backupToSettings("qig_active_prompt_replacement_ids_by_char", activePromptReplacementIdsByChar);
+                migratePromptReplacementsToFilters(data.promptReplacements, {
+                    settings: getSettings(),
+                    persist: false,
+                    sourceLabel: "imported settings",
+                });
             }
             syncActiveGenerationPresetSetting({ persist: true });
             ensureFilterPoolsState({ persist: true });
-            ensurePromptReplacementState({ persist: true });
-            renderTemplates();
             renderPresets();
             renderProfileSelect();
             renderComfyWorkflowPresets();
             renderContextualFilters();
-            renderPromptReplacements();
             toastr.success("Settings imported successfully");
         } catch (err) {
             console.error("[Quick Image Gen] Import failed:", err);
@@ -10360,17 +9929,11 @@ function bindCheckbox(id, key) {
     return bind(id, key, false, true);
 }
 
-function syncCheckboxGroup(ids, checked) {
-    ids.forEach((id) => {
-        const el = getOrCacheElement(id);
-        if (el) el.checked = checked;
-    });
-}
-
 function setAutoGenerateEnabled(checked) {
     const normalized = !!checked;
     getSettings().autoGenerate = normalized;
-    syncCheckboxGroup(["qig-auto-generate", "qig-inject-auto-generate"], normalized);
+    const el = getOrCacheElement("qig-auto-generate");
+    if (el) el.checked = normalized;
     if (!normalized && _autoGenTimeout) {
         clearTimeout(_autoGenTimeout);
         _autoGenTimeout = null;
@@ -10989,21 +10552,20 @@ function createUI() {
                 <hr style="margin:8px 0;opacity:0.2;">
                 <div class="inline-drawer" style="margin:4px 0;">
                     <div class="inline-drawer-toggle inline-drawer-header">
-                        <b style="font-size:12px;">Prompt & Templates</b>
+                        <b style="font-size:12px;">Prompt & Presets</b>
                         <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                     </div>
                     <div class="inline-drawer-content">
-                        <small style="opacity:0.7;">Base prompt used for direct generation, or as scene context when LLM prompt is enabled</small>
-                        <label>Prompt <button id="qig-save-template" class="menu_button" style="float:right;padding:2px 8px;font-size:11px;" title="Save the current prompt text as a reusable template">💾 Save Template</button></label>
+                        <small style="opacity:0.7;">Base prompt used for manual generation, or as scene context when LLM prompt is enabled</small>
+                        <label>Prompt</label>
                         <textarea id="qig-prompt" rows="2">${esc(s.prompt)}</textarea>
-                        <div id="qig-templates" style="margin:4px 0;"></div>
                         <div style="display:flex;gap:4px;margin:4px 0;">
                             <button id="qig-save-preset" class="menu_button" style="padding:2px 8px;font-size:11px;" title="Save all generation settings (prompt, negative, size, steps, etc.) as a preset">💾 Save Preset</button>
                             <button id="qig-export-btn" class="menu_button" style="padding:2px 8px;font-size:11px;">Export</button>
                             <button id="qig-import-btn" class="menu_button" style="padding:2px 8px;font-size:11px;">Import</button>
                         </div>
                         <div id="qig-presets" style="margin:4px 0;"></div>
-                        <small style="opacity:0.6;font-size:10px;">Profiles save provider config · Templates save prompt text · Presets save all settings</small>
+                        <small style="opacity:0.6;font-size:10px;">Profiles save provider config. Presets save prompt, size, inject behavior, contextual filters, and other generation settings.</small>
 
                         <hr style="margin:8px 0;opacity:0.2;">
                         <label>Negative Prompt</label>
@@ -11092,98 +10654,59 @@ function createUI() {
                     </div>
                 </div>
 
-                <div class="inline-drawer" style="margin:4px 0;">
-                    <div class="inline-drawer-toggle inline-drawer-header">
-                        <b style="font-size:12px;">Prompt Replacement Maps</b>
-                        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                    </div>
-                    <div class="inline-drawer-content">
-                        <small style="opacity:0.7;">Exact-token replacement maps for prompt tags/text (global or per-character)</small>
-                        <div id="qig-prompt-replacements" style="margin:4px 0;"></div>
-                        <button id="qig-add-replacement-btn" class="menu_button" style="padding:4px 8px;">+ Add Replacement Map</button>
-                    </div>
-                </div>
-
                 <label class="checkbox_label">
                     <input id="qig-use-st-style" type="checkbox" ${s.useSTStyle !== false ? "checked" : ""}>
                     <span>Use SillyTavern's Style panel (applies its prefix, negative prompt, and character-specific settings)</span>
                 </label>
 
                 <hr style="margin:8px 0;opacity:0.2;">
-                <style>
-                .qig-mode-tab.active { background: var(--SmartThemeQuoteColor, #4a6); color: #fff; opacity: 1; }
-                .qig-mode-tab:not(.active) { opacity: 0.6; }
-                </style>
                 <div style="margin:4px 0;">
-                    <div id="qig-mode-tabs" style="display:flex;gap:0;margin-bottom:8px;">
-                        <button class="qig-mode-tab menu_button" data-tab="direct"
-                            style="flex:1;border-radius:4px 0 0 4px;padding:4px 8px;font-size:12px;"
-                            title="Generate images on demand or auto-trigger after AI messages">
-                            Direct Mode</button>
-                        <button class="qig-mode-tab menu_button" data-tab="inject"
-                            style="flex:1;border-radius:0 4px 4px 0;padding:4px 8px;font-size:12px;"
-                            title="AI writes image descriptions in its responses; auto-generate from them when Auto-generate is enabled">
-                            Inject Mode</button>
-                    </div>
-
-                    <!-- Direct tab -->
-                    <div id="qig-tab-direct" class="qig-tab-panel">
-                        <small style="opacity:0.7;">Generate images on demand or automatically after AI messages</small>
-                        <label class="checkbox_label" style="margin-top:6px;">
-                            <input id="qig-auto-generate" type="checkbox" ${s.autoGenerate ? "checked" : ""}>
-                            <span>Auto-generate after AI response</span>
-                        </label>
-                        <label class="checkbox_label">
-                            <input id="qig-confirm-generate" type="checkbox" ${s.confirmBeforeGenerate ? "checked" : ""}>
-                            <span>Confirm before generating</span>
-                        </label>
-                    </div>
-
-                    <!-- Inject tab -->
-                    <div id="qig-tab-inject" class="qig-tab-panel" style="display:none;">
-                        <small style="opacity:0.7;">Let the RP AI describe scenes with image tags, then auto-generate images from them when both toggles below are enabled</small>
-                        <label class="checkbox_label" style="margin-top:6px;">
-                            <input id="qig-inject-enabled" type="checkbox" ${s.injectEnabled ? "checked" : ""}>
-                            <span>Enable inject mode</span>
-                        </label>
-                        <div id="qig-inject-options" style="display:${s.injectEnabled ? "block" : "none"};margin-left:16px;">
-                            <label class="checkbox_label">
-                                <input id="qig-inject-auto-generate" type="checkbox" ${s.autoGenerate ? "checked" : ""}>
-                                <span>Auto-generate after AI response</span>
-                            </label>
-                            <small style="opacity:0.6;font-size:10px;">Required for automatic inject processing. This mirrors the same Auto-generate setting shown in Direct Mode.</small>
-                            <label>Tag name</label>
-                            <input id="qig-inject-tag-name" type="text" value="${esc(getInjectTagName(s))}" placeholder="image" style="width:100%;text-transform:lowercase;">
-                            <small style="opacity:0.6;font-size:10px;">Preview: <code id="qig-inject-tag-preview">${esc(getInjectTagPreview(getInjectTagName(s)))}</code>. Change this if your preset/model tends to swallow &lt;image&gt; tags inside reasoning.</small>
-                            <label>Inject prompt template</label>
-                            <textarea id="qig-inject-prompt" rows="3" style="width:100%;resize:vertical;">${esc(s.injectPrompt || "")}</textarea>
-                            <small style="opacity:0.6;font-size:10px;">Supports {{char}}, {{user}}. Default prompt tells the AI to put the image tag in the final visible reply, not inside reasoning or &lt;think&gt;.</small>
-                            <label>Extraction regex</label>
-                            <input id="qig-inject-regex" type="text" value="${esc(s.injectRegex || '')}" style="width:100%;font-family:monospace;font-size:11px;">
-                            <small style="opacity:0.6;font-size:10px;">Capture groups extract the image prompt. Default matches your custom paired tag plus legacy &lt;pic prompt="..."&gt; tags.</small>
-                            <label>Injection position</label>
-                            <select id="qig-inject-position">
-                                <option value="afterScenario" ${s.injectPosition === "afterScenario" ? "selected" : ""}>After Scenario</option>
-                                <option value="inUser" ${s.injectPosition === "inUser" ? "selected" : ""}>Before User Message</option>
-                                <option value="atDepth" ${s.injectPosition === "atDepth" ? "selected" : ""}>At Depth</option>
-                            </select>
-                            <small style="opacity:0.6;font-size:10px;">Before User Message may interfere with thinking/reasoning presets.</small>
-                            <div id="qig-inject-depth-wrap" style="display:${s.injectPosition === "atDepth" ? "block" : "none"};">
-                                <label>Depth</label>
-                                <input id="qig-inject-depth" type="number" value="${esc(s.injectDepth || 0)}" min="0" max="100">
-                            </div>
-                            <label>Tag handling</label>
-                            <select id="qig-inject-insert-mode">
-                                <option value="replace" ${s.injectInsertMode === "replace" ? "selected" : ""}>Replace tag with image</option>
-                                <option value="inline" ${s.injectInsertMode === "inline" ? "selected" : ""}>Insert image after message</option>
-                                <option value="new" ${s.injectInsertMode === "new" ? "selected" : ""}>New message with image</option>
-                            </select>
-                            <label class="checkbox_label">
-                                <input id="qig-inject-autoclean" type="checkbox" ${s.injectAutoClean !== false ? "checked" : ""}>
-                                <span>Remove detected image tags from the stored/displayed message</span>
-                            </label>
-                            <button id="qig-test-inject" style="margin-top:8px;padding:4px 8px;cursor:pointer;">🔍 Test Inject Detection</button>
+                    <small style="opacity:0.7;">Generate images on demand or automatically after AI messages</small>
+                    <label class="checkbox_label" style="margin-top:6px;">
+                        <input id="qig-auto-generate" type="checkbox" ${s.autoGenerate ? "checked" : ""}>
+                        <span>Auto-generate after AI response</span>
+                    </label>
+                    <label class="checkbox_label">
+                        <input id="qig-confirm-generate" type="checkbox" ${s.confirmBeforeGenerate ? "checked" : ""}>
+                        <span>Confirm before generating</span>
+                    </label>
+                    <label class="checkbox_label" style="margin-top:8px;">
+                        <input id="qig-inject-enabled" type="checkbox" ${s.injectEnabled ? "checked" : ""}>
+                        <span>Use AI-written image tags for auto-generation</span>
+                    </label>
+                    <div id="qig-inject-options" style="display:${s.injectEnabled ? "block" : "none"};margin-left:16px;">
+                        <small style="opacity:0.6;font-size:10px;">Active only when Auto-generate is enabled. QIG injects instructions into chat completions, extracts image tags from AI replies, and turns them into images.</small>
+                        <label>Tag name</label>
+                        <input id="qig-inject-tag-name" type="text" value="${esc(getInjectTagName(s))}" placeholder="image" style="width:100%;text-transform:lowercase;">
+                        <small style="opacity:0.6;font-size:10px;">Preview: <code id="qig-inject-tag-preview">${esc(getInjectTagPreview(getInjectTagName(s)))}</code>. Change this if your preset/model tends to swallow &lt;image&gt; tags inside reasoning.</small>
+                        <label>Inject prompt template</label>
+                        <textarea id="qig-inject-prompt" rows="3" style="width:100%;resize:vertical;">${esc(s.injectPrompt || "")}</textarea>
+                        <small style="opacity:0.6;font-size:10px;">Supports {{char}}, {{user}}. Default prompt tells the AI to put the image tag in the final visible reply, not inside reasoning or &lt;think&gt;.</small>
+                        <label>Extraction regex</label>
+                        <input id="qig-inject-regex" type="text" value="${esc(s.injectRegex || '')}" style="width:100%;font-family:monospace;font-size:11px;">
+                        <small style="opacity:0.6;font-size:10px;">Capture groups extract the image prompt. Default matches your custom paired tag plus legacy &lt;pic prompt="..."&gt; tags.</small>
+                        <label>Injection position</label>
+                        <select id="qig-inject-position">
+                            <option value="afterScenario" ${s.injectPosition === "afterScenario" ? "selected" : ""}>After Scenario</option>
+                            <option value="inUser" ${s.injectPosition === "inUser" ? "selected" : ""}>Before User Message</option>
+                            <option value="atDepth" ${s.injectPosition === "atDepth" ? "selected" : ""}>At Depth</option>
+                        </select>
+                        <small style="opacity:0.6;font-size:10px;">Before User Message may interfere with thinking/reasoning presets.</small>
+                        <div id="qig-inject-depth-wrap" style="display:${s.injectPosition === "atDepth" ? "block" : "none"};">
+                            <label>Depth</label>
+                            <input id="qig-inject-depth" type="number" value="${esc(s.injectDepth || 0)}" min="0" max="100">
                         </div>
+                        <label>Tag handling</label>
+                        <select id="qig-inject-insert-mode">
+                            <option value="replace" ${s.injectInsertMode === "replace" ? "selected" : ""}>Replace tag with image</option>
+                            <option value="inline" ${s.injectInsertMode === "inline" ? "selected" : ""}>Insert image after message</option>
+                            <option value="new" ${s.injectInsertMode === "new" ? "selected" : ""}>New message with image</option>
+                        </select>
+                        <label class="checkbox_label">
+                            <input id="qig-inject-autoclean" type="checkbox" ${s.injectAutoClean !== false ? "checked" : ""}>
+                            <span>Remove detected image tags from the stored/displayed message</span>
+                        </label>
+                        <button id="qig-test-inject" style="margin-top:8px;padding:4px 8px;cursor:pointer;">🔍 Test Inject Detection</button>
                     </div>
                 </div>
 
@@ -11191,14 +10714,7 @@ function createUI() {
                     <input id="qig-disable-palette" type="checkbox" ${s.disablePaletteButton ? "checked" : ""}>
                     <span>Hide palette button</span>
                 </label>
-                <div style="display:flex;align-items:center;gap:8px;margin:6px 0;">
-                    <label style="font-size:12px;white-space:nowrap;">Palette button mode</label>
-                    <select id="qig-palette-mode" style="flex:1;">
-                        <option value="direct" ${s.paletteMode === "inject" ? "" : "selected"}>Direct (manual prompt)</option>
-                        <option value="inject" ${s.paletteMode === "inject" ? "selected" : ""}>Inject (extract/generate image tags)</option>
-                    </select>
-                </div>
-                <small style="opacity:0.6;font-size:10px;">Direct = opens prompt editor · Inject = generates from AI-written image tags</small>
+                <small style="opacity:0.6;font-size:10px;">The palette button always runs a normal image generation with the current settings.</small>
 
                 <div style="margin:6px 0;padding:8px;border:1px solid #555;border-radius:4px;">
                     <label class="checkbox_label">
@@ -11300,27 +10816,19 @@ function createUI() {
 
     document.getElementById("extensions_settings").insertAdjacentHTML("beforeend", html);
 
-    document.getElementById("qig-generate-btn").onclick = () => {
-        const mode = getSettings().paletteMode || "direct";
-        if (mode === "inject") generateImageInjectPalette();
-        else generateImage();
-    };
+    document.getElementById("qig-generate-btn").onclick = () => generateImage();
     document.getElementById("qig-logs-btn").onclick = showLogs;
     document.getElementById("qig-save-char-btn").onclick = saveCharSettings;
     document.getElementById("qig-gallery-settings-btn").onclick = showGallery;
     document.getElementById("qig-prompt-history-btn").onclick = showPromptHistory;
-    document.getElementById("qig-save-template").onclick = saveTemplate;
     document.getElementById("qig-profile-save").onclick = saveConnectionProfile;
     document.getElementById("qig-save-preset").onclick = savePreset;
     document.getElementById("qig-export-btn").onclick = exportAllSettings;
     document.getElementById("qig-import-btn").onclick = importSettings;
-    document.getElementById("qig-add-replacement-btn").onclick = addPromptReplacement;
-    renderTemplates();
     renderPresets();
     renderProfileSelect();
     renderComfyWorkflowPresets();
     renderContextualFilters();
-    renderPromptReplacements();
 
     document.getElementById("qig-provider").onchange = (e) => {
         getSettings().provider = e.target.value;
@@ -11897,8 +11405,6 @@ function createUI() {
         document.getElementById("qig-llm-custom-wrap").style.display = e.target.value === "custom" ? "block" : "none";
     };
     bindAutoGenerateCheckbox("qig-auto-generate");
-    bindAutoGenerateCheckbox("qig-inject-auto-generate");
-    syncCheckboxGroup(["qig-auto-generate", "qig-inject-auto-generate"], !!getSettings().autoGenerate);
     bindCheckbox("qig-auto-insert", "autoInsert");
     const outputModeEl = document.getElementById("qig-output-mode");
     if (outputModeEl) {
@@ -12029,16 +11535,6 @@ function createUI() {
         alert(result);
     };
 
-    // Mode tab switching
-    document.querySelectorAll(".qig-mode-tab").forEach(tab => {
-        tab.addEventListener("click", () => {
-            document.querySelectorAll(".qig-mode-tab").forEach(t => t.classList.remove("active"));
-            document.querySelectorAll(".qig-tab-panel").forEach(p => p.style.display = "none");
-            tab.classList.add("active");
-            document.getElementById("qig-tab-" + tab.dataset.tab).style.display = "block";
-        });
-    });
-    bind("qig-palette-mode", "paletteMode");
     // LLM Override bindings
     document.getElementById("qig-llm-override").onchange = (e) => {
         getSettings().llmOverrideEnabled = e.target.checked;
@@ -12058,7 +11554,6 @@ function createUI() {
         saveSettingsDebounced();
     };
     bind("qig-llm-override-max", "llmOverrideMaxTokens", true);
-    document.querySelector('.qig-mode-tab[data-tab="direct"]').classList.add("active");
     const widthEl = document.getElementById("qig-width");
     const heightEl = document.getElementById("qig-height");
     const onSizeChange = () => {
@@ -12371,9 +11866,7 @@ function addInputButton() {
         }
         paletteGenerateLockUntil = now + PALETTE_GENERATE_LOCK_MS;
         if (_autoGenTimeout) { clearTimeout(_autoGenTimeout); _autoGenTimeout = null; }
-        const mode = getSettings().paletteMode || "direct";
-        if (mode === "inject") generateImageInjectPalette();
-        else generateImage();
+        generateImage();
     };
     btn.oncontextmenu = showPalettePresetMenu;
 
@@ -12381,244 +11874,6 @@ function addInputButton() {
     const leftArea = document.getElementById("leftSendForm") || document.querySelector("#send_form .left_menu_buttons");
     if (leftArea) {
         leftArea.appendChild(btn);
-    }
-}
-
-async function generateImageInjectPalette() {
-    if (isGenerating) return;
-    const mySerial = ++_paletteInjectSerial;
-    beginGeneration({ clearPendingAuto: true });
-    _paletteInjectActive = true;
-    const s = getSettings();
-    const cancelCheckpoint = getCancelCheckpoint();
-    let sourceInjectMessage = null;
-    const consumedMessagePrompts = new Set();
-
-    try {
-        checkAborted(cancelCheckpoint);
-        const ctx = getContext();
-        const chat = ctx.chat;
-        let regexPattern;
-        let lastAiMessage = null;
-        let initialDetection = null;
-        let matches = [];
-
-        try {
-            regexPattern = getInjectRegexPattern(s);
-            lastAiMessage = findLastInjectCandidateMessage(chat);
-            if (lastAiMessage) {
-                initialDetection = extractInjectPromptsFromMessage(lastAiMessage.message, s);
-                const detectedPrompts = initialDetection.matches.map(match => match.prompt);
-                matches = filterConsumedInjectPrompts(detectedPrompts, lastAiMessage.message, s);
-                const skippedConsumed = detectedPrompts.length - matches.length;
-                if (skippedConsumed > 0) {
-                    log(`Palette inject: Skipping ${skippedConsumed} previously consumed tag(s) from last AI message`);
-                }
-
-                // If all tags were filtered but some were detected, use them anyway for manual generation
-                if (matches.length === 0 && detectedPrompts.length > 0) {
-                    log(`Palette inject: All ${detectedPrompts.length} detected tags were marked consumed`);
-                    log(`Palette inject: Using detected tags for manual generation: ${detectedPrompts.map(p => p.substring(0, 50)).join(', ')}`);
-                    matches = detectedPrompts;
-                    sourceInjectMessage = null; // Don't mark as consumed again
-                } else if (matches.length > 0) {
-                    sourceInjectMessage = lastAiMessage.message;
-                }
-            }
-        } catch (e) {
-            log(`Palette inject: Invalid regex: ${e.message}`);
-            toastr.error("Invalid inject regex: " + e.message);
-            return;
-        }
-
-        // Step 2: LLM fallback if no tags found
-        if (matches.length === 0) {
-            log("Palette inject: No image tags found, calling LLM...");
-            showStatus("🔍 No image tags found — asking LLM to generate them...");
-
-            const sceneContext = getMessages() || "the current scene";
-            const injectInstruction = resolvePrompt(getInjectPromptTemplate(s));
-            const timestamp = Date.now();
-            const fullInstruction = `${injectInstruction}\n\nBased on this scene context, generate exactly one image tag for the single best visual moment. YOU MUST use the exact tag format shown above. Return exactly one tag only. Do not generate multiple tags, lists, moments, or variants.\n\nScene context:\n${sceneContext}\n\nRespond with image tags only.\n\n[${timestamp}]`;
-
-            let llmResponse;
-            if (s.llmOverrideEnabled && s.llmOverrideProfileId) {
-                log("Using LLM Override for inject palette");
-                llmResponse = await callOverrideLLM(fullInstruction);
-            } else {
-                llmResponse = await callInternalStandaloneLLM(fullInstruction, {
-                    signal: currentAbortController?.signal,
-                    quietName: `ImageGenInject_${timestamp}`,
-                    label: "palette inject tag generation request",
-                });
-            }
-            checkAborted(cancelCheckpoint);
-
-            log(`Palette inject: LLM response: ${(llmResponse || "").substring(0, 200)}...`);
-
-            if (llmResponse) {
-                matches = limitInjectFallbackMatches(
-                    extractInjectMatchesFromText(llmResponse, regexPattern),
-                    "Palette inject fallback"
-                );
-            }
-
-            if (matches.length === 0) {
-                // Enhanced diagnostic logging
-                const aiSources = initialDetection?.scannedSources?.join(", ") || "none";
-                const aiMsgPreview = initialDetection?.sources?.[0]?.text?.substring(0, 200) || 'none';
-                const llmPreview = (llmResponse || 'none').substring(0, 200);
-                const regexPreview = regexPattern.substring(0, 100);
-
-                log(`Palette inject: Regex pattern used: ${regexPattern}`);
-                log(`Palette inject: AI sources scanned: ${aiSources}`);
-                log(`Palette inject: AI message scanned: ${aiMsgPreview}...`);
-                log(`Palette inject: LLM response received: ${llmPreview}...`);
-                log(`Palette inject: Full instruction sent: ${fullInstruction.substring(0, 300)}...`);
-
-                const debugInfo = `Regex: ${regexPreview}${regexPattern.length > 100 ? '...' : ''} | AI sources: ${aiSources} | AI msg: ${aiMsgPreview.substring(0, 50)}... | LLM: ${llmPreview.substring(0, 50)}...`;
-                toastr.warning("No image tags found. Check console for details.", "Image Generation");
-                log(`Palette inject: DIAGNOSTIC INFO - ${debugInfo}`);
-                console.warn("QIG Inject Mode Debug:", {
-                    regexPattern,
-                    aiSources,
-                    aiMessage: initialDetection?.sources?.map(source => ({ label: source.label, text: source.text })),
-                    llmResponse,
-                    instruction: fullInstruction
-                });
-                return;
-            }
-        }
-
-        log(`Palette inject: Found ${matches.length} image tag(s), generating images...`);
-
-        // Step 3: Generate images for each extracted prompt (same pipeline as processInjectMessage)
-        // Keep raw scene text here; the shared contextual filter pipeline enriches it as needed.
-        const baseSceneText = getMessages() || "";
-        for (const extractedPrompt of matches) {
-            checkAborted(cancelCheckpoint);
-            showStatus(`🖼️ Generating palette-inject image...`);
-
-            let prompt = await generateLLMPrompt(s, extractedPrompt, currentAbortController?.signal);
-            checkAborted(cancelCheckpoint);
-
-            // Show prompt editing dialog if enabled
-            if (s.useLLMPrompt && s.llmEditPrompt && prompt !== extractedPrompt) {
-                const editedPrompt = await showPromptEditDialog(prompt);
-                if (editedPrompt !== null) {
-                    prompt = editedPrompt;
-                } else {
-                    continue;
-                }
-            }
-            if (sourceInjectMessage) {
-                consumedMessagePrompts.add(extractedPrompt);
-            }
-
-            let negative = resolvePrompt(s.negativePrompt);
-
-            // Apply style
-            prompt = applyStyle(prompt, s);
-
-            // Apply quality tags
-            if (s.appendQuality && s.qualityTags) {
-                prompt = `${s.qualityTags}, ${prompt}`;
-            }
-
-            // Apply ST Style
-            if (s.useSTStyle !== false) {
-                const stStyle = getSTStyleSettings();
-                if (stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
-                if (stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
-                if (stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
-                if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
-            }
-
-            const contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
-                matchText: baseSceneText || prompt,
-                llmSceneText: baseSceneText || extractedPrompt,
-                signal: currentAbortController?.signal,
-            });
-            checkAborted(cancelCheckpoint);
-            prompt = contextualApplied.prompt;
-            negative = contextualApplied.negative;
-
-            const replacementApplied = applyPromptReplacementMaps(prompt, negative);
-            prompt = replacementApplied.prompt;
-            negative = replacementApplied.negative;
-
-            lastPrompt = prompt;
-            lastNegative = negative;
-            lastPromptWasLLM = (s.useLLMPrompt && prompt !== extractedPrompt);
-            lastProxyContextRefImages = [];
-
-            const batchCount = s.batchCount || 1;
-            const results = [];
-            const originalSeed = getGenerationSeedValue(s);
-            const useSequentialSeeds = s.sequentialSeeds && batchCount > 1;
-            const baseSeed = getBatchBaseSeed(s, batchCount, contextualApplied.seedOverride);
-            for (let i = 0; i < batchCount; i++) {
-                    checkAborted(cancelCheckpoint);
-                    setGenerationSeedValue(s, useSequentialSeeds ? baseSeed + i : baseSeed);
-                    showStatus(`🖼️ Generating palette-inject image ${i + 1}/${batchCount}...`);
-                    const expandedPrompt = expandWildcards(prompt);
-                    const expandedNegative = expandWildcards(negative);
-                    const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
-                    if (result) {
-                        const entry = await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, { promptWasLLM: lastPromptWasLLM });
-                        if (entry) results.push(entry);
-                }
-            }
-            setGenerationSeedValue(s, originalSeed);
-
-                if (results.length > 0) {
-                    if (results.length === 1) {
-                        if (s.autoInsert) {
-                            addToGallery(results[0]);
-                            try {
-                                await autoInsertInjectImage(results[0], {
-                                    messageIndex: lastAiMessage?.index,
-                                    insertMode: s.insertAsHiddenReply ? "hidden" : s.injectInsertMode,
-                                });
-                            } catch (err) {
-                                log(`Palette inject: Auto-insert failed: ${err.message}`);
-                                displayImage(results[0]);
-                        }
-                    } else {
-                        displayImage(results[0]);
-                    }
-                } else {
-                    // Always show batch picker for multiple images
-                    displayBatchResults(results);
-                }
-                toastr.success(`Palette inject: ${results.length} image(s) generated`);
-            }
-        }
-    } catch (e) {
-        if (e.name === "AbortError") {
-            log("Palette inject: Generation cancelled by user");
-            toastr.info("Generation cancelled");
-        } else {
-            log(`Palette inject: Error: ${e.message}`);
-            toastr.error("Palette inject failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true });
-        }
-    } finally {
-        if (sourceInjectMessage && consumedMessagePrompts.size > 0) {
-            try {
-                const persisted = await persistConsumedInjectPrompts(sourceInjectMessage, [...consumedMessagePrompts], s);
-                if (persisted.cleaned) {
-                    log(`Palette inject: Consumed ${consumedMessagePrompts.size} tag(s) and cleaned them from the source message`);
-                } else if (persisted.remembered) {
-                    log(`Palette inject: Marked ${consumedMessagePrompts.size} source tag(s) as consumed`);
-                }
-            } catch (e) {
-                log(`Palette inject: Failed to persist consumed tags: ${e.message}`);
-            }
-        }
-        endGeneration();
-        _paletteInjectActive = false;
-        clearStyleCache();
-        log("Palette inject: Cleared caches after generation");
     }
 }
 
@@ -12732,10 +11987,6 @@ async function generateImage() {
     checkAborted(cancelCheckpoint);
     prompt = contextualApplied.prompt;
     negative = contextualApplied.negative;
-
-    const replacementApplied = applyPromptReplacementMaps(prompt, negative);
-    prompt = replacementApplied.prompt;
-    negative = replacementApplied.negative;
 
     lastPrompt = prompt;
     lastNegative = negative;
@@ -12855,13 +12106,6 @@ function extractInjectMatchesFromText(text, regexPattern) {
         if (match[0] === "") regex.lastIndex++;
     }
     return matches;
-}
-
-function limitInjectFallbackMatches(matches, label = "Inject fallback") {
-    const normalized = [...new Set((matches || []).map(prompt => String(prompt || "").trim()).filter(Boolean))];
-    if (normalized.length <= 1) return normalized;
-    log(`${label}: Helper returned ${normalized.length} image tag(s); using only the first to avoid multi-image bursts`);
-    return normalized.slice(0, 1);
 }
 
 function getInjectCurrentSwipeText(message) {
@@ -13069,7 +12313,7 @@ function cleanInjectTagsFromMessage(message, regexPattern, promptsToRemove = nul
 function onChatCompletionPromptReady(eventData) {
     if (isGenerating) return; // Don't inject into our own internal LLM calls
     const s = getSettings();
-    if (!s.injectEnabled) return;
+    if (!s.injectEnabled || !s.autoGenerate) return;
 
     const promptText = resolvePrompt(getInjectPromptTemplate(s));
     const position = s.injectPosition || "afterScenario";
@@ -13238,10 +12482,6 @@ async function processInjectMessage(messageText, messageIndex) {
                 prompt = contextualApplied.prompt;
                 negative = contextualApplied.negative;
 
-                const replacementApplied = applyPromptReplacementMaps(prompt, negative);
-                prompt = replacementApplied.prompt;
-                negative = replacementApplied.negative;
-
                 lastPrompt = prompt;
                 lastNegative = negative;
                 lastPromptWasLLM = (s.useLLMPrompt && prompt !== extractedPrompt);
@@ -13378,10 +12618,6 @@ jQuery(function () {
             initMessageGenerateActionObserver();
             loadCharSettings();
 
-            // Ensure paletteMode select reflects saved setting after DOM insertion
-            const palModeEl = document.getElementById("qig-palette-mode");
-            if (palModeEl) palModeEl.value = getSettings().paletteMode || "direct";
-
             // Populate LLM override dropdowns if enabled
             const initSettings = getSettings();
             if (initSettings.llmOverrideEnabled) {
@@ -13394,7 +12630,7 @@ jQuery(function () {
                 eventSource.on(event_types.MESSAGE_RECEIVED, (messageIndex) => {
                     scheduleRefreshMessageGenerateActions();
                     if (shouldSuppressAutoGenerateFromInternalLLM(messageIndex)) return;
-                    if (_paletteInjectActive || _injectProcessingCount > 0) return;
+                    if (_injectProcessingCount > 0) return;
                     const s = getSettings();
                     if (!s.autoGenerate) return;
                     // Inject mode: extract image tags from AI response/reasoning
@@ -13436,7 +12672,6 @@ jQuery(function () {
                     }
                     loadCharSettings();
                     renderContextualFilters();
-                    renderPromptReplacements();
                 });
             }
         } catch (err) {

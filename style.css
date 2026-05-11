@@ -4,6 +4,8 @@
     --qig-surface-soft: color-mix(in srgb, var(--SmartThemeBlurTintColor) 94%, var(--SmartThemeBodyColor) 6%);
     --qig-line: color-mix(in srgb, var(--SmartThemeBorderColor) 82%, transparent);
     --qig-text-soft: color-mix(in srgb, var(--SmartThemeBodyColor) 72%, transparent);
+    --qig-success: color-mix(in srgb, var(--qig-accent) 76%, var(--SmartThemeBodyColor) 24%);
+    --qig-ease: cubic-bezier(0.22, 1, 0.36, 1);
     --qig-radius: 8px;
     color: var(--SmartThemeBodyColor);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
@@ -49,7 +51,7 @@
     padding: 7px 9px;
     font-size: 12px;
     line-height: 1.35;
-    transition: border-color 160ms ease-out, background-color 160ms ease-out, box-shadow 160ms ease-out;
+    transition: border-color 180ms var(--qig-ease), background-color 180ms var(--qig-ease), box-shadow 180ms var(--qig-ease);
 }
 
 #qig-settings textarea {
@@ -72,8 +74,23 @@
 }
 
 #qig-settings .menu_button {
-    min-height: 30px;
+    min-height: 34px;
     border-radius: 6px;
+    transition: border-color 180ms var(--qig-ease), background-color 180ms var(--qig-ease), box-shadow 180ms var(--qig-ease), transform 140ms var(--qig-ease);
+}
+
+#qig-settings .menu_button:hover {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--qig-accent) 18%, transparent);
+}
+
+#qig-settings .menu_button:active {
+    transform: translateY(1px);
+}
+
+#qig-settings .menu_button:focus-visible,
+#qig-settings .checkbox_label:focus-within {
+    outline: 2px solid color-mix(in srgb, var(--qig-accent) 54%, transparent);
+    outline-offset: 2px;
 }
 
 .qig-menu-hero {
@@ -152,7 +169,7 @@
 .qig-quick-actions,
 .qig-action-strip {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
     gap: 6px;
 }
 
@@ -263,6 +280,91 @@
 .qig-row input {
     width: 80px;
     flex: 1;
+}
+
+.qig-provider-ready {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px;
+    margin-bottom: 10px;
+    border: 1px solid var(--qig-line);
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 66%, transparent);
+}
+
+.qig-provider-ready strong {
+    display: block;
+    font-size: 12px;
+    line-height: 1.25;
+}
+
+.qig-status-pill {
+    flex: 0 0 auto;
+    padding: 4px 8px;
+    border: 1px solid var(--qig-line);
+    border-radius: 999px;
+    color: var(--qig-text-soft);
+    background: var(--qig-surface-soft);
+    font-size: 10px;
+    font-weight: 800;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+.qig-status-pill--ready {
+    color: color-mix(in srgb, var(--qig-success) 88%, var(--SmartThemeBodyColor) 12%);
+    border-color: color-mix(in srgb, var(--qig-success) 42%, transparent);
+    background: color-mix(in srgb, var(--qig-success) 16%, transparent);
+}
+
+.qig-nbp-panel {
+    margin: 10px 0;
+}
+
+.qig-nbp-toggle {
+    padding: 9px 10px;
+    border: 1px solid color-mix(in srgb, var(--qig-accent) 28%, var(--qig-line));
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--qig-accent) 9%, transparent);
+}
+
+.qig-inline-checkbox {
+    align-self: end;
+    min-height: 34px;
+    padding: 7px 0;
+}
+
+.qig-ref-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-height: 8px;
+    margin: 6px 0;
+}
+
+.qig-ref-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.qig-ref-controls .menu_button {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 34px;
+    padding: 6px 10px;
+}
+
+.qig-ref-controls input {
+    flex: 1;
+    min-width: 0;
+    margin-top: 0 !important;
+    font-size: 12px;
 }
 
 .qig-size-row {
@@ -922,6 +1024,21 @@
         flex-direction: column;
     }
 
+    .qig-row,
+    .qig-provider-ready,
+    .qig-ref-controls {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .qig-row input {
+        width: 100%;
+    }
+
+    .qig-inline-checkbox {
+        align-self: stretch;
+    }
+
     .qig-menu-section,
     .qig-menu-hero {
         padding: 10px;
@@ -1018,6 +1135,18 @@
 }
 .qig-batch-thumb.active {
     border-color: var(--SmartThemeQuoteColor);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #qig-settings *,
+    #qig-status,
+    .qig-batch-thumb,
+    .qig-paragraph-item {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
 }
 
 /* Paragraph picker */

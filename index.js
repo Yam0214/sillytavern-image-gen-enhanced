@@ -96,6 +96,143 @@ function normalizePaletteMode(value) {
     return String(value || "").trim().toLowerCase() === "inject" ? "inject" : "direct";
 }
 
+const NANOBANANA_MODEL_OPTIONS = [
+    { id: "gemini-3-pro-image-preview", name: "Nano Banana Pro (Gemini 3 Pro Image)" },
+    { id: "gemini-3.1-flash-image-preview", name: "Nano Banana 2 (Gemini 3.1 Flash Image)" },
+    { id: "gemini-2.5-flash-image", name: "Nano Banana (Gemini 2.5 Flash Image)" },
+    { id: "gemini-2.0-flash-exp", name: "Gemini 2.0 Flash Exp" },
+];
+
+const NBP_DIRECTOR_PROMPTS = {
+    house: {
+        name: "TLD House Anime",
+        text: [
+            "You are an expert anime illustration director specializing in high-production character art in a Girls' Frontline 2 / Realistic Nijigen-inspired style.",
+            "Render anime first and polished second: a refined anime CG illustration, never a filtered photograph, oily glamour render, or flat cartoon.",
+            "Face: fully anime-styled with large expressive eyes, soft simplified features, small nose and mouth, even readable lighting, visible iris color, layered catchlights, and clear emotional expression.",
+            "Skin: smooth, stylized, cleanly shaded with soft tonal transitions and small controlled anime-CG highlight accents only where light naturally catches rounded forms.",
+            "Hair: stylized grouped strands with layered highlight bands and clear volume separation.",
+            "Clothing: believable fabric weight, fold logic, tension, seams, and material distinction while staying inside an anime illustration language.",
+            "Legwear: when present, render as a distinct surface over skin with controlled material highlights and clean transitions.",
+            "Feet: when visible, render clean anatomy, continuous limb path, natural arches and soles, exactly five toes per foot with clear toe separation, soft warm accents, and tasteful anime-CG sheen.",
+            "Toenails: when visible, treat as distinct surfaces from skin and preserve existing polish color, finish, edge shape, and gloss character.",
+            "Anatomical accuracy: exactly two arms, two legs, five fingers per hand, five toes per foot. Every limb traces a continuous path from joint to extremity and bends only in anatomically possible directions.",
+            "When reference images are provided, use them as the identity, outfit, pose, composition, and value-structure anchor. Change only what the prompt requests.",
+        ].join(" "),
+    },
+    preservation: {
+        name: "Reference Preservation",
+        text: [
+            "This is a localized preservation edit. The source image is the primary anchor.",
+            "Preserve character identity, face, hairstyle, outfit design, composition, lighting intensity, value range, and non-target regions.",
+            "Repair or enhance only the requested region. Do not globally reinterpret, beautify, redesign, or increase contrast unless explicitly requested.",
+            "Use controlled satin highlights only. Keep the image anime first, polished second.",
+        ].join(" "),
+    },
+    structural: {
+        name: "Anatomy Repair",
+        text: [
+            "Prioritize anatomical construction and continuity.",
+            "Correct only visible structural errors. Ensure exactly two arms, two legs, five fingers per hand, and five toes per foot.",
+            "Every limb must trace a continuous path from joint to extremity. Joints bend only in anatomically possible directions.",
+            "Do not idealize, redesign, change outfit details, or change the scene beyond the requested correction.",
+        ].join(" "),
+    },
+    custom: {
+        name: "Custom Director",
+        text: "",
+    },
+};
+
+const NBP_NEGATIVE_GUIDANCE = "Avoid wet-looking skin, oily shine, greasy gloss, plastic skin, blown white highlight patches, exaggerated redness, extra toes, fused toes, missing toes, malformed feet, broken ankles, extra limbs, missing limbs, stronger contrast than the source image, photorealistic face drift, flat cartoon simplification, text, watermark, and signature.";
+const NANOBANANA_ASPECT_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"];
+const NANOBANANA_FLASH31_EXTRA_RATIOS = ["1:4", "1:8", "4:1", "8:1"];
+
+function normalizeNbpDirectorPreset(value) {
+    return NBP_DIRECTOR_PROMPTS[value] ? value : "house";
+}
+
+function buildNbpDirectorInstruction(settings = getSettings()) {
+    if (!settings?.nanobananaNbpMode) return "";
+    const presetKey = normalizeNbpDirectorPreset(settings.nanobananaNbpPreset);
+    const customDirector = String(settings.nanobananaNbpCustomDirector || "").trim();
+    const preset = presetKey === "custom"
+        ? (customDirector || NBP_DIRECTOR_PROMPTS.house.text)
+        : (NBP_DIRECTOR_PROMPTS[presetKey]?.text || NBP_DIRECTOR_PROMPTS.house.text);
+    const custom = String(settings.nanobananaNbpCustomPrompt || "").trim();
+    const useNegativeGuidance = settings.nanobananaNbpUseNegative !== false;
+    return [
+        "Nano Banana Pro director instructions:",
+        preset,
+        custom ? `Scene-specific house direction: ${custom}` : "",
+        useNegativeGuidance ? `Negative guidance: ${NBP_NEGATIVE_GUIDANCE}` : "",
+    ].filter(Boolean).join(" ");
+}
+
+function buildNanobananaModelOptions(selectedModel) {
+    const selected = String(selectedModel || "").trim();
+    const seen = new Set();
+    const options = NANOBANANA_MODEL_OPTIONS.map(model => {
+        seen.add(model.id);
+        return `<option value="${escapeHtml(model.id)}" ${selected === model.id ? "selected" : ""}>${escapeHtml(model.name)}</option>`;
+    });
+    if (selected && !seen.has(selected)) {
+        options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(`${selected} (custom saved model)`)}</option>`);
+    }
+    return options.join("");
+}
+
+function getNanobananaAspectRatio(settings = getSettings()) {
+    const width = Math.max(1, parseIntOr(settings?.width, SIZE_DEFAULT));
+    const height = Math.max(1, parseIntOr(settings?.height, SIZE_DEFAULT));
+    const ratio = width / height;
+    const options = /3\.1.*flash/i.test(settings?.nanobananaModel || "")
+        ? [...NANOBANANA_ASPECT_RATIOS, ...NANOBANANA_FLASH31_EXTRA_RATIOS]
+        : NANOBANANA_ASPECT_RATIOS;
+    return options.reduce((best, option) => {
+        const [w, h] = option.split(":").map(Number);
+        const score = Math.abs(Math.log(ratio / (w / h)));
+        return score < best.score ? { value: option, score } : best;
+    }, { value: "1:1", score: Number.POSITIVE_INFINITY }).value;
+}
+
+function getNanobananaImageSize(settings = getSettings()) {
+    if (!/gemini-3/i.test(settings?.nanobananaModel || "")) return null;
+    const maxSide = Math.max(parseIntOr(settings?.width, SIZE_DEFAULT), parseIntOr(settings?.height, SIZE_DEFAULT));
+    if (/3\.1.*flash/i.test(settings?.nanobananaModel || "") && maxSide <= 512) return "512";
+    if (maxSide >= 3072) return "4K";
+    if (maxSide >= 1536) return "2K";
+    return "1K";
+}
+
+function applyChatGptNbpWorkflowPreset({ persist = true, notify = true } = {}) {
+    const s = getSettings();
+    Object.assign(s, {
+        provider: "nanobanana",
+        nanobananaModel: "gemini-3-pro-image-preview",
+        nanobananaNbpMode: true,
+        nanobananaNbpPreset: "house",
+        nanobananaNbpUseNegative: true,
+        useLastMessage: true,
+        messageRange: "-1",
+        useLLMPrompt: true,
+        llmPromptStyle: "natural",
+        llmEditPrompt: false,
+        appendQuality: true,
+        style: "none",
+        width: 1024,
+        height: 1536,
+        batchCount: 1,
+        sequentialSeeds: false,
+        autoInsert: true,
+        outputMode: "inline",
+        manualInsertTarget: "assistant",
+    });
+    if (persist) saveSettingsDebounced?.();
+    if (notify) toastr?.success?.("Configured ChatGPT + Nano Banana Pro workflow");
+    return s;
+}
+
 const defaultSettings = {
     provider: "pollinations",
     style: "none",
@@ -186,7 +323,12 @@ const defaultSettings = {
     civitaiLoras: "",
     // Nanobanana (Gemini)
     nanobananaKey: "",
-    nanobananaModel: "gemini-2.5-flash-image",
+    nanobananaModel: "gemini-3-pro-image-preview",
+    nanobananaNbpMode: true,
+    nanobananaNbpPreset: "house",
+    nanobananaNbpUseNegative: true,
+    nanobananaNbpCustomDirector: "",
+    nanobananaNbpCustomPrompt: "",
     nanobananaExtraInstructions: "",
     nanobananaRefImages: [],
     // Stability AI
@@ -5314,23 +5456,35 @@ async function genNanobanana(prompt, negative, s, signal) {
     if (s.nanobananaRefImages?.length) {
         finalPrompt = `Look at the reference image(s) above. Match their style, composition, and visual characteristics. Now generate a new image with this description: ${prompt}`;
     }
+    const nbpDirectorInstruction = buildNbpDirectorInstruction(s);
+    if (nbpDirectorInstruction) finalPrompt += ` ${nbpDirectorInstruction}`;
     if (negative) finalPrompt += ` Avoid: ${negative}`;
-    if (s.nanobananaExtraInstructions) finalPrompt += ` ${s.nanobananaExtraInstructions}`;
+    if (s.nanobananaExtraInstructions) finalPrompt += ` Additional user instructions: ${s.nanobananaExtraInstructions}`;
 
     parts.push({ text: finalPrompt });
+
+    const generationConfig = {
+        responseModalities: ["TEXT", "IMAGE"]
+    };
+    const imageSize = getNanobananaImageSize(s);
+    generationConfig.imageConfig = {
+        aspectRatio: getNanobananaAspectRatio(s),
+    };
+    if (imageSize) generationConfig.imageConfig.imageSize = imageSize;
 
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${s.nanobananaModel}:generateContent?key=${s.nanobananaKey}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
             contents: [{ role: "user", parts }],
-            generationConfig: {
-                responseModalities: ["TEXT", "IMAGE"]
-            }
+            generationConfig
         }),
         signal
     });
-    if (!res.ok) throw new Error(`Nanobanana error: ${res.status}`);
+    if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        throw new Error(`Nanobanana error: ${res.status}${errText ? ` - ${errText.slice(0, 300)}` : ""}`);
+    }
     const data = await res.json();
 
     for (const candidate of data.candidates || []) {
@@ -9903,7 +10057,7 @@ function refreshProviderInputs(provider) {
         nanogpt: [["qig-nanogpt-key", "nanogptKey"], ["qig-nanogpt-model", "nanogptModel"], ["qig-nanogpt-strength", "nanogptStrength"]],
         chutes: [["qig-chutes-key", "chutesKey"], ["qig-chutes-model", "chutesModel"]],
         civitai: [["qig-civitai-key", "civitaiKey"], ["qig-civitai-model", "civitaiModel"], ["qig-civitai-scheduler", "civitaiScheduler"], ["qig-civitai-loras", "civitaiLoras"]],
-        nanobanana: [["qig-nanobanana-key", "nanobananaKey"], ["qig-nanobanana-model", "nanobananaModel"], ["qig-nanobanana-extra", "nanobananaExtraInstructions"]],
+        nanobanana: [["qig-nanobanana-key", "nanobananaKey"], ["qig-nanobanana-model", "nanobananaModel"], ["qig-nanobanana-nbp-mode", "nanobananaNbpMode"], ["qig-nanobanana-nbp-preset", "nanobananaNbpPreset"], ["qig-nanobanana-nbp-negative", "nanobananaNbpUseNegative"], ["qig-nanobanana-nbp-custom-director", "nanobananaNbpCustomDirector"], ["qig-nanobanana-nbp-custom", "nanobananaNbpCustomPrompt"], ["qig-nanobanana-extra", "nanobananaExtraInstructions"]],
         stability: [["qig-stability-key", "stabilityKey"]],
         replicate: [["qig-replicate-key", "replicateKey"], ["qig-replicate-model", "replicateModel"]],
         fal: [["qig-fal-key", "falKey"], ["qig-fal-model", "falModel"]],
@@ -10281,6 +10435,7 @@ function buildOptions(items, selectedValue, labelFn) {
 
 function createUI() {
     clearCache();
+    document.querySelectorAll("#qig-settings").forEach(el => el.remove());
     const s = getSettings();
     if (s.provider === "novelai") normalizeSize(s);
     const esc = (v) => escapeHtml(v == null ? "" : String(v));
@@ -10477,21 +10632,63 @@ function createUI() {
                 </div>
                 
                 <div id="qig-nanobanana-settings" class="qig-provider-section">
-                    <label>Gemini API Key</label>
-                    <input id="qig-nanobanana-key" type="password" value="${esc(s.nanobananaKey)}">
-                    <label>Model</label>
-                    <select id="qig-nanobanana-model">
-                        <option value="gemini-2.5-flash-image" ${s.nanobananaModel === "gemini-2.5-flash-image" ? "selected" : ""}>Gemini 2.5 Flash Image</option>
-                        <option value="gemini-2.0-flash-exp" ${s.nanobananaModel === "gemini-2.0-flash-exp" ? "selected" : ""}>Gemini 2.0 Flash Exp</option>
-                    </select>
-                    <label>Extra Instructions</label>
-                    <textarea id="qig-nanobanana-extra" rows="2" placeholder="Additional instructions for Nanobanana Pro...">${esc(s.nanobananaExtraInstructions || "")}</textarea>
+                    <div class="qig-provider-ready">
+                        <div>
+                            <strong>Nano Banana Pro setup</strong>
+                            <small>Use a Gemini API key, keep the Pro model selected, then generate from the current chat scene or a direct prompt.</small>
+                        </div>
+                        <span class="qig-status-pill ${s.nanobananaKey ? "qig-status-pill--ready" : ""}">${s.nanobananaKey ? "Key saved" : "Needs key"}</span>
+                    </div>
+                    <div class="qig-row">
+                        <div>
+                            <label for="qig-nanobanana-key">Gemini API Key</label>
+                            <input id="qig-nanobanana-key" type="password" value="${esc(s.nanobananaKey)}" autocomplete="off" placeholder="AI Studio API key">
+                            <small>Stored in SillyTavern extension settings. Save a Connection Profile if you swap providers often.</small>
+                        </div>
+                        <div>
+                            <label for="qig-nanobanana-model">Model</label>
+                            <select id="qig-nanobanana-model">
+                                ${buildNanobananaModelOptions(s.nanobananaModel)}
+                            </select>
+                            <small>Pro gives the strongest instruction following. Flash is better for quick drafts.</small>
+                        </div>
+                    </div>
+                    <div class="qig-nbp-panel">
+                        <label class="checkbox_label qig-nbp-toggle">
+                            <input id="qig-nanobanana-nbp-mode" type="checkbox" ${s.nanobananaNbpMode !== false ? "checked" : ""}>
+                            <span>Use TLD Nano Banana Pro director</span>
+                        </label>
+                        <div id="qig-nanobanana-nbp-options" class="qig-dependent-panel" style="display:${s.nanobananaNbpMode !== false ? "block" : "none"}">
+                            <div class="qig-row">
+                                <div>
+                                    <label for="qig-nanobanana-nbp-preset">Director preset</label>
+                                    <select id="qig-nanobanana-nbp-preset">
+                                        ${Object.entries(NBP_DIRECTOR_PROMPTS).map(([key, preset]) => `<option value="${esc(key)}" ${normalizeNbpDirectorPreset(s.nanobananaNbpPreset) === key ? "selected" : ""}>${esc(preset.name)}</option>`).join("")}
+                                    </select>
+                                </div>
+                                <label class="checkbox_label qig-inline-checkbox">
+                                    <input id="qig-nanobanana-nbp-negative" type="checkbox" ${s.nanobananaNbpUseNegative !== false ? "checked" : ""}>
+                                    <span>Include anti-gloss and anatomy guardrails</span>
+                                </label>
+                            </div>
+                            <div id="qig-nanobanana-custom-director-wrap" style="display:${normalizeNbpDirectorPreset(s.nanobananaNbpPreset) === "custom" ? "block" : "none"}">
+                                <label for="qig-nanobanana-nbp-custom-director">Custom director prompt</label>
+                                <textarea id="qig-nanobanana-nbp-custom-director" rows="5" placeholder="Write the full reusable art-direction prompt. This replaces the built-in TLD director when Custom Director is selected.">${esc(s.nanobananaNbpCustomDirector || "")}</textarea>
+                                <small>Use this for your own NBP prompting style, provider experiments, or alternate house styles. The scene-specific note below still appends after it.</small>
+                            </div>
+                            <label for="qig-nanobanana-nbp-custom">Scene-specific director note</label>
+                            <textarea id="qig-nanobanana-nbp-custom" rows="2" placeholder="Optional: preserve Kokomi's canon outfit, use intimate close framing, keep the cave lighting warm...">${esc(s.nanobananaNbpCustomPrompt || "")}</textarea>
+                            <small>The director text is injected into the provider request after the final QIG prompt. It works with manual prompts, chat-message prompts, and LLM prompt rewriting.</small>
+                        </div>
+                    </div>
+                    <label for="qig-nanobanana-extra">Extra Instructions</label>
+                    <textarea id="qig-nanobanana-extra" rows="2" placeholder="Optional one-off provider instruction. Usually leave blank when the NBP director is enabled.">${esc(s.nanobananaExtraInstructions || "")}</textarea>
                     <label>Reference Images (up to 15)</label>
-                    <div id="qig-nanobanana-refs" style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0;"></div>
+                    <div id="qig-nanobanana-refs" class="qig-ref-grid"></div>
                     <input type="file" id="qig-nanobanana-ref-input" accept="image/*" multiple style="display:none">
-                    <div style="display:flex;gap:4px;align-items:center;">
-                        <button id="qig-nanobanana-ref-btn" class="menu_button" style="padding:4px 8px;">📎 Files</button>
-                        <input id="qig-nanobanana-ref-url" type="text" placeholder="Paste image URL and press Enter" style="flex:1;font-size:11px;">
+                    <div class="qig-ref-controls">
+                        <button id="qig-nanobanana-ref-btn" class="menu_button" title="Add reference image files"><span class="fa-solid fa-paperclip"></span><span>Files</span></button>
+                        <input id="qig-nanobanana-ref-url" type="text" placeholder="Paste image URL and press Enter">
                     </div>
                 </div>
 
@@ -10973,6 +11170,7 @@ function createUI() {
                         <small>Used for manual generation, or as scene context when LLM prompt is enabled.</small>
                     </div>
                     <div class="qig-action-strip">
+                        <button id="qig-chatgpt-nbp-setup" class="menu_button qig-inline-action" title="Set QIG for ChatGPT prompt writing and Nano Banana Pro image rendering"><span class="fa-solid fa-wand-magic-sparkles"></span><span>ChatGPT + NBP</span></button>
                         <button id="qig-plain-desc-btn" class="menu_button" title="Write a plain-language image description and let the AI turn it into a prompt"><span class="fa-solid fa-pen-to-square"></span><span>Plain Description</span></button>
                         <button id="qig-save-preset" class="menu_button" title="Save all generation settings as a preset"><span class="fa-solid fa-bookmark"></span><span>Save Preset</span></button>
                         <button id="qig-export-btn" class="menu_button"><span class="fa-solid fa-file-export"></span><span>Export</span></button>
@@ -11272,6 +11470,12 @@ function createUI() {
     document.getElementById("qig-save-char-btn").onclick = saveCharSettings;
     document.getElementById("qig-gallery-settings-btn").onclick = showGallery;
     document.getElementById("qig-prompt-history-btn").onclick = showPromptHistory;
+    document.getElementById("qig-chatgpt-nbp-setup").onclick = () => {
+        applyChatGptNbpWorkflowPreset();
+        createUI();
+        const promptSection = document.getElementById("qig-prompt");
+        promptSection?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    };
     document.getElementById("qig-plain-desc-btn").onclick = generateImageFromPlainDescription;
     document.getElementById("qig-profile-save").onclick = saveConnectionProfile;
     document.getElementById("qig-save-preset").onclick = savePreset;
@@ -11320,6 +11524,23 @@ function createUI() {
     bind("qig-civitai-loras", "civitaiLoras");
     bind("qig-nanobanana-key", "nanobananaKey");
     bind("qig-nanobanana-model", "nanobananaModel");
+    document.getElementById("qig-nanobanana-nbp-mode").onchange = (e) => {
+        const enabled = e.target.checked;
+        getSettings().nanobananaNbpMode = enabled;
+        const opts = document.getElementById("qig-nanobanana-nbp-options");
+        if (opts) opts.style.display = enabled ? "block" : "none";
+        saveSettingsDebounced();
+    };
+    const nbpPresetEl = document.getElementById("qig-nanobanana-nbp-preset");
+    nbpPresetEl.onchange = (e) => {
+        getSettings().nanobananaNbpPreset = normalizeNbpDirectorPreset(e.target.value);
+        const customWrap = document.getElementById("qig-nanobanana-custom-director-wrap");
+        if (customWrap) customWrap.style.display = getSettings().nanobananaNbpPreset === "custom" ? "block" : "none";
+        saveSettingsDebounced();
+    };
+    bindCheckbox("qig-nanobanana-nbp-negative", "nanobananaNbpUseNegative");
+    bind("qig-nanobanana-nbp-custom-director", "nanobananaNbpCustomDirector");
+    bind("qig-nanobanana-nbp-custom", "nanobananaNbpCustomPrompt");
     bind("qig-nanobanana-extra", "nanobananaExtraInstructions");
     bind("qig-stability-key", "stabilityKey");
     bind("qig-replicate-key", "replicateKey");

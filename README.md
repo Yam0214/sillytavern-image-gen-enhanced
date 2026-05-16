@@ -7,7 +7,11 @@ Prompt Replacement Maps and Prompt Templates have been removed. Old prompt repla
 
 **Install:** Extensions -> Install from URL -> `https://github.com/platberlitz/sillytavern-image-gen`
 
-## What's New in v2.0.6
+## What's New in v2.0.8
+- Added an optional SillyTavern server relay plugin for CivitAI and Replicate users running SillyTavern with `basicAuthMode: true`.
+- CivitAI/Replicate proxy failures caused by basic auth now show a concise setup message instead of SillyTavern's unauthorized HTML page.
+
+## Recent v2.0.6 Fixes
 - Added Nano Banana Pro / Gemini 3 Pro Image workflow controls, including director presets, optional negative guidance, and a one-click ChatGPT + Nano Banana Pro setup.
 - Polished the Quick Image Gen settings UI with collapsible sections, a sticky action bar, clearer provider cards, and improved mobile layout.
 
@@ -170,6 +174,21 @@ For ComfyUI:
 - Use API-format workflow JSON for custom workflows.
 - Use `%reference_image%` in custom workflows when needed.
 - See [`docs/comfyui-workflow-variables.md`](docs/comfyui-workflow-variables.md) for the full placeholder list and typed-value behavior.
+
+## CivitAI / Replicate Behind SillyTavern Basic Auth
+
+SillyTavern's built-in CORS proxy is blocked by `basicAuthMode` when a provider request also needs its own `Authorization` header. This affects CivitAI and Replicate in browser-only mode.
+
+Quick Image Gen includes an optional server plugin that relays only the CivitAI consumer-jobs endpoint and Replicate predictions endpoints used by this extension.
+
+Install it if CivitAI or Replicate shows a message about `basicAuthMode` blocking the CORS proxy:
+
+1. Copy this repo's `server-plugin` directory to your SillyTavern install as `plugins/quick-image-gen-relay/`.
+2. Set `enableServerPlugins: true` in SillyTavern `config.yaml`.
+3. Restart SillyTavern.
+4. While logged in, open `/api/plugins/quick-image-gen-relay/healthz`. A blank response with HTTP 204 means the plugin is loaded.
+
+SillyTavern server plugins are not sandboxed. Only install server plugins from developers you trust. This plugin does not accept arbitrary target URLs: it only relays the CivitAI consumer-jobs endpoint and Replicate predictions endpoints used by Quick Image Gen, and it does not store or log provider API keys.
 
 ## Credits
 

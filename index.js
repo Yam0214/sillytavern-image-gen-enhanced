@@ -1953,17 +1953,130 @@ function isComfyFluxMode(s) {
     return !!s?.comfySkipNegativePrompt && !!(s?.comfyFluxClipModel1 || "").trim();
 }
 
+const QIG_RELAY_BASE = "/api/plugins/quick-image-gen-relay";
+const CORS_PROXY_BASIC_AUTH_MESSAGE = "SillyTavern basicAuthMode is blocking the CORS proxy for requests that need their own Authorization header. Install the optional Quick Image Gen server plugin (see README), or disable basicAuthMode to use CivitAI/Replicate.";
+
+class CorsProxyBasicAuthError extends Error {
+    constructor(url) {
+        super(CORS_PROXY_BASIC_AUTH_MESSAGE);
+        this.name = "CorsProxyBasicAuthError";
+        this.url = url;
+    }
+}
+
+function isBasicAuthChallenge(header) {
+    return /(^|\s|,)Basic\b/i.test(header || "");
+}
+
+function hasAuthorizationHeader(headers) {
+    if (!headers) return false;
+    if (headers instanceof Headers) return headers.has("Authorization");
+    if (Array.isArray(headers)) return headers.some(([key]) => String(key).toLowerCase() === "authorization");
+    return Object.keys(headers).some(key => key.toLowerCase() === "authorization");
+}
+
+function getSameOriginHeaders() {
+    const headers = typeof getRequestHeaders === 'function' ? { ...getRequestHeaders() } : {};
+    delete headers.Authorization;
+    delete headers.authorization;
+    return headers;
+}
+
+function getSameOriginJsonHeaders() {
+    return { ...getSameOriginHeaders(), "Content-Type": "application/json" };
+}
+
+let _qigRelayState = 0; // 0=unknown, 1=available, -1=unavailable
+async function qigRelayAvailable(signal) {
+    if (_qigRelayState !== 0) return _qigRelayState === 1;
+    try {
+        const res = await fetch(`${QIG_RELAY_BASE}/healthz`, {
+            method: "GET",
+            headers: getSameOriginHeaders(),
+            credentials: "same-origin",
+            signal,
+        });
+        _qigRelayState = res.ok ? 1 : -1;
+        return res.ok;
+    } catch (e) {
+        if (e?.name === 'AbortError') throw e;
+        _qigRelayState = -1;
+        return false;
+    }
+}
+
+async function qigRelayFetch(provider, payload, signal) {
+    return fetch(`${QIG_RELAY_BASE}/${provider}`, {
+        method: "POST",
+        headers: getSameOriginJsonHeaders(),
+        body: JSON.stringify(payload),
+        credentials: "same-origin",
+        signal,
+    });
+}
+
+async function civitaiFetch(action, payload, signal) {
+    if (await qigRelayAvailable(signal)) {
+        return qigRelayFetch("civitai", { action, ...payload }, signal);
+    }
+    if (action === "createJob") {
+        return corsFetch("https://civitai.com/api/v1/consumer/jobs", {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${payload.apiKey}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload.body),
+            signal,
+        });
+    }
+    if (action === "getJobs") {
+        const url = new URL("https://civitai.com/api/v1/consumer/jobs");
+        url.searchParams.set("token", payload.token);
+        return corsFetch(url.toString(), {
+            headers: { "Authorization": `Bearer ${payload.apiKey}` },
+            signal,
+        });
+    }
+    throw new Error(`Unknown CivitAI relay action: ${action}`);
+}
+
+async function replicateFetch(action, payload, signal) {
+    if (await qigRelayAvailable(signal)) {
+        return qigRelayFetch("replicate", { action, ...payload }, signal);
+    }
+    if (action === "createPrediction") {
+        return corsFetch("https://api.replicate.com/v1/predictions", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Token ${payload.apiKey}`,
+            },
+            body: JSON.stringify(payload.body),
+            signal,
+        });
+    }
+    if (action === "getPrediction") {
+        return corsFetch(`https://api.replicate.com/v1/predictions/${encodeURIComponent(payload.id)}`, {
+            headers: { "Authorization": `Token ${payload.apiKey}` },
+            signal,
+        });
+    }
+    throw new Error(`Unknown Replicate relay action: ${action}`);
+}
+
 // CORS-aware fetch: tries direct, falls back to ST's /proxy/ endpoint
-let _corsProxyState = 0; // 0=unknown, 1=direct works, 2=proxy works, -1=proxy disabled
+let _corsProxyState = 0; // 0=unknown, 1=direct works, 2=proxy works, -1=proxy disabled, -2=blocked by basicAuth
 async function corsFetch(url, opts = {}) {
     const crossOrigin = (() => {
         try { return new URL(url).origin !== location.origin; } catch { return true; }
     })();
+    const requestHasOwnAuthorization = hasAuthorizationHeader(opts.headers);
     // Prefer direct fetch; only skip direct cross-origin when proxy has already been proven required.
     if (!crossOrigin || _corsProxyState !== 2) {
         try {
             const res = await fetch(url, opts);
-            if (crossOrigin) _corsProxyState = 1;
+            if (crossOrigin && _corsProxyState !== -2) _corsProxyState = 1;
             return res;
         } catch (e) {
             if (e.name === 'AbortError') throw e;
@@ -1971,6 +2084,9 @@ async function corsFetch(url, opts = {}) {
             if (!crossOrigin) throw e;
             // TypeError on cross-origin usually means CORS/network failure, try proxy.
         }
+    }
+    if (_corsProxyState === -2 && requestHasOwnAuthorization) {
+        throw new CorsProxyBasicAuthError(url);
     }
     if (_corsProxyState === -1) {
         throw new TypeError(`Cannot reach ${url} (CORS). Enable enableCorsProxy in SillyTavern config.yaml or launch A1111 with --cors-allow-origins=*`);
@@ -1980,6 +2096,11 @@ async function corsFetch(url, opts = {}) {
     const stHeaders = typeof getRequestHeaders === 'function' ? getRequestHeaders() : {};
     const mergedHeaders = { ...stHeaders, ...opts.headers };
     const res = await fetch(proxyUrl, { ...opts, headers: mergedHeaders });
+    if (requestHasOwnAuthorization && res.status === 401 && isBasicAuthChallenge(res.headers.get("www-authenticate"))) {
+        _corsProxyState = -2;
+        await res.text().catch(() => {});
+        throw new CorsProxyBasicAuthError(url);
+    }
     if (res.status === 404) {
         const text = await res.text();
         if (text.includes('CORS proxy is disabled')) {
@@ -5458,15 +5579,10 @@ async function genCivitAI(prompt, negative, s, signal) {
     };
     if (additionalNetworks) input.additionalNetworks = additionalNetworks;
 
-    const res = await corsFetch("https://civitai.com/api/v1/consumer/jobs", {
-        method: "POST",
-        headers: {
-            "Authorization": `Bearer ${s.civitaiKey}`,
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ $type: "textToImage", input }),
-        signal
-    });
+    const res = await civitaiFetch("createJob", {
+        apiKey: s.civitaiKey,
+        body: { $type: "textToImage", input },
+    }, signal);
     if (!res.ok) {
         const errText = await res.text();
         throw new Error(`CivitAI error: ${res.status} - ${errText}`);
@@ -5481,10 +5597,10 @@ async function genCivitAI(prompt, negative, s, signal) {
     for (let i = 0; i < 60; i++) {
         if (signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
         await new Promise(r => setTimeout(r, 2000));
-        const statusRes = await corsFetch(`https://civitai.com/api/v1/consumer/jobs?token=${jobToken}`, {
-            headers: { "Authorization": `Bearer ${s.civitaiKey}` },
-            signal
-        });
+        const statusRes = await civitaiFetch("getJobs", {
+            apiKey: s.civitaiKey,
+            token: jobToken,
+        }, signal);
         if (!statusRes.ok) {
             lastError = `Status error: ${statusRes.status}`;
             continue;
@@ -7571,13 +7687,9 @@ async function genReplicate(prompt, negative, s, signal) {
     const version = s.replicateModel || "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b";
 
     // Create prediction
-    const res = await corsFetch("https://api.replicate.com/v1/predictions", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Token ${s.replicateKey}`
-        },
-        body: JSON.stringify({
+    const res = await replicateFetch("createPrediction", {
+        apiKey: s.replicateKey,
+        body: {
             version: version,
             input: {
                 prompt: prompt,
@@ -7598,9 +7710,8 @@ async function genReplicate(prompt, negative, s, signal) {
                     "heun": "K_HEUN"
                 })[s.sampler] || "K_EULER"
             }
-        }),
-        signal
-    });
+        },
+    }, signal);
     if (!res.ok) throw new Error(`Replicate error: ${res.status}`);
     const pred = await res.json();
 
@@ -7608,10 +7719,10 @@ async function genReplicate(prompt, negative, s, signal) {
     for (let i = 0; i < 60; i++) {
         if (signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
         await new Promise(r => setTimeout(r, 2000));
-        const statusRes = await corsFetch(`https://api.replicate.com/v1/predictions/${pred.id}`, {
-            headers: { "Authorization": `Token ${s.replicateKey}` },
-            signal
-        });
+        const statusRes = await replicateFetch("getPrediction", {
+            apiKey: s.replicateKey,
+            id: pred.id,
+        }, signal);
         if (!statusRes.ok) throw new Error(`Replicate polling error: ${statusRes.status}`);
         const status = await statusRes.json();
         if (status.status === "succeeded") {

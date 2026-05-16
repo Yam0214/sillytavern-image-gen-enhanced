@@ -7,7 +7,12 @@ Prompt Replacement Maps and Prompt Templates have been removed. Old prompt repla
 
 **Install:** Extensions -> Install from URL -> `https://github.com/platberlitz/sillytavern-image-gen`
 
-## What's New in v2.0.5
+## What's New in v2.0.6
+- Added Reverse Proxy `New-API Chat Image mode` for OpenAI-compatible proxies that generate images through `chat/completions`.
+- Chat Image mode locks routing to `chat/completions` by default, uses a 16k max-token budget, supports a custom system prompt, can optionally append active character/persona context, and avoids editing the source chat message when auto-inserting results.
+- Added a route-permission toggle for proxies that should still use `/images/generations` routing.
+
+## Recent v2.0.5 Fixes
 - Added GPT Image as its own provider, defaulting to `gpt-image-2`.
 - GPT Image supports optional reverse proxy URL/key overrides like NovelAI, plus quality, output format, background, and moderation controls.
 
@@ -113,6 +118,33 @@ Legacy Prompt Replacement Maps are migrated into Contextual Filters as best-effo
 - `Auto-generate after AI response`: Generate after assistant replies.
 - `Confirm before generating`: Ask before manual generation.
 - `Auto-insert`: Insert generated images directly into chat.
+
+### Reverse Proxy New-API Chat Image Mode
+
+Use Reverse Proxy `New-API Chat Image mode` when your OpenAI-compatible endpoint exposes image generation through `chat/completions` instead of the normal `/images/generations` route.
+
+Recommended setup:
+
+1. Pick `Reverse Proxy` as the provider.
+2. Enter your proxy base URL, for example `https://proxy.example/v1`, and optional API key.
+3. Enter the chat-image model name required by your proxy.
+4. Enable `New-API Chat Image mode`.
+5. Click `Apply Chat Image Defaults` for the simple workflow:
+   - route through `chat/completions`
+   - use OpenAI Strict payload mode
+   - allow inline or URL reference images
+   - disable SSE
+   - use the latest chat message as the image instruction
+   - auto-insert generated images as a new assistant chat message
+
+Chat Image settings:
+
+- `Personality / System Prompt`: The system prompt sent before the user image instruction. The default tells the model to behave as a visual image generation assistant and return an image in the provider-supported format.
+- `Append active chat character and persona context`: Optional. Leave this off for cleaner, more predictable provider calls. Turn it on when the image model should preserve the current character card, persona, scenario, outfit, or identity details.
+- `Max Tokens`: Defaults to `16384` (16k) because chat-image providers may return verbose image payloads or data URLs. The field accepts values from `1` to `65536`.
+- `Permit /images/generations routing`: Off by default. When off, QIG forces `chat/completions` even if the URL or endpoint selector would otherwise route to `/images/generations`. Turn it on only for proxy stacks where Auto routing should still be allowed to choose `/images/generations`.
+
+When Chat Image mode is enabled and `Auto-insert` is on, generated images are inserted as a new assistant message unless `Insert as hidden reply` is enabled. This keeps the original user/source message unchanged.
 
 ### Inject
 Inject is now auto-only.

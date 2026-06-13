@@ -4,3 +4,7 @@ node_modules/
 .worktrees/
 docs/*
 !docs/comfyui-workflow-variables.md
+.opencode/
+.env
+.env.*
+AGENTS.md

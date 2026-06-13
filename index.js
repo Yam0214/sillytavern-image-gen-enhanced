@@ -2514,17 +2514,18 @@ const hideStatus = () => showStatus();
 function setGenerationActiveUI(active, { disableGenerateButton = false } = {}) {
     const paletteBtn = getOrCacheElement("qig-input-btn");
     if (paletteBtn) {
-        if (active) {
-            paletteBtn.classList.remove("fa-palette");
-            paletteBtn.classList.add("fa-spinner", "fa-spin");
-            paletteBtn.title = "Cancel Generation";
-            paletteBtn.style.opacity = "0.7";
-        } else {
-            paletteBtn.classList.remove("fa-spinner", "fa-spin");
-            paletteBtn.classList.add("fa-palette");
-            paletteBtn.title = "Generate Image (right-click for presets)";
-            paletteBtn.style.opacity = "0.7";
+        const icon = paletteBtn.querySelector(".qig-input-btn-icon");
+        if (icon) {
+            if (active) {
+                icon.classList.remove("fa-palette");
+                icon.classList.add("fa-spinner", "fa-spin");
+            } else {
+                icon.classList.remove("fa-spinner", "fa-spin");
+                icon.classList.add("fa-palette");
+            }
         }
+        paletteBtn.title = active ? "Cancel Generation" : "Generate Image (right-click for presets)";
+        paletteBtn.style.opacity = "0.7";
     }
 
     if (!disableGenerateButton) return;
@@ -13871,9 +13872,12 @@ function addInputButton() {
 
     const btn = document.createElement("div");
     btn.id = "qig-input-btn";
-    btn.className = "fa-solid fa-palette interactable";
+    btn.className = "interactable";
     btn.title = "Generate Image (right-click for presets)";
     btn.style.cssText = "cursor:pointer;padding:5px;font-size:1.2em;opacity:0.7;";
+    const icon = document.createElement("i");
+    icon.className = "fa-solid fa-palette qig-input-btn-icon";
+    btn.appendChild(icon);
     btn.onclick = () => {
         closePalettePresetMenu();
         const now = Date.now();

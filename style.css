@@ -511,14 +511,34 @@
     line-height: 1.2;
 }
 
+/* Fix: #chat is a flex child with overflow-y: scroll but no min-height: 0,
+   which causes scrollbar flicker on sub-pixel layout changes (e.g. spinner animation).
+   Override from extension since ST core CSS doesn't set this. */
+#chat {
+    min-height: 0;
+}
+
 #qig-input-btn {
     cursor: pointer;
     padding: 2px 5px;
     font-size: 1em;
     opacity: 0.7;
+    width: var(--bottomFormBlockSize, 36px);
+    height: var(--bottomFormBlockSize, 36px);
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    overflow: hidden;
+    contain: layout style;
 }
 #qig-input-btn:hover {
     opacity: 1;
+}
+#qig-input-btn .qig-input-btn-icon.fa-spin {
+    will-change: transform;
+    contain: layout style;
 }
 
 .qig-message-generate--fallback {

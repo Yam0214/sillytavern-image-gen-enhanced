@@ -371,7 +371,13 @@ SillyTavern server plugins are not sandboxed. Only install server plugins from d
 
 ### 功能添加
 
-*（暂无，将在后续版本中添加）*
+- **Console 调试开关**：暴露 `window.QIG` 对象，支持从浏览器 Console 控制日志详细程度和查看缓存日志。([commit](https://github.com/Yam0214/sillytavern-image-gen-enhanced/commit/adfe81b))
+  ```js
+  window.QIG.verbose = true   // 开启完整日志（默认截断 200 字符）
+  window.QIG.verbose = false  // 关闭（恢复截断）
+  window.QIG.logs             // 查看缓存日志
+  ```
+- **LLM 请求日志**：生图 Prompt 生成时，打印实际发送给 LLM 的完整请求内容（含缓存破坏标记和 prefill），便于调试 Prompt 工程。([commit](https://github.com/Yam0214/sillytavern-image-gen-enhanced/commit/adfe81b))
 
 ## License
 

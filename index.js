@@ -2145,6 +2145,9 @@ function log(msg) {
     if (logs.length > 100) logs.shift();
     console.log("[QIG]", msg);
 }
+// Expose to console: QIG.verbose = true  → show full log messages
+//                    QIG.verbose = false → auto-truncate (default)
+window.QIG = { logs, get verbose() { return !!this._v; }, set verbose(v) { this._v = !!v; console.log("[QIG] verbose:", !!v); } };
 
 function parseFloatOr(value, fallback) {
     const n = parseFloat(value);
@@ -5140,7 +5143,7 @@ async function generateLLMPrompt(s, basePrompt, signal, options = {}) {
         let instruction;
         if (isCustom) {
             log(`Custom macros: scene=${basePrompt.length}ch, char="${charName}", user="${userName}", charDesc=${charDesc.length}ch, userDesc=${userPersona.length}ch`);
-            log(`Using custom instruction: ${s.llmCustomInstruction.substring(0, 100)}...`);
+            log(`Using custom instruction: ${window.QIG?.verbose ? s.llmCustomInstruction : s.llmCustomInstruction.substring(0, 100) + "..."}`);
             instruction = s.llmCustomInstruction
                 .replace(/\{\{scene\}\}/gi, basePrompt)
                 .replace(/\{\{charDesc\}\}/gi, charDesc.substring(0, 1500))
@@ -5396,7 +5399,7 @@ async function generateLiteralFallback(originalInstruction) {
         // Clean up but keep essence
         extracted = extracted.replace(/\n\n+/g, '\n').trim();
 
-        log(`Literal fallback extracted: ${extracted.substring(0, 100)}...`);
+        log(`Literal fallback extracted: ${window.QIG?.verbose ? extracted : extracted.substring(0, 100) + "..."}`);
         return extracted;
     } catch (e) {
         log(`Literal fallback failed: ${e.message}`);

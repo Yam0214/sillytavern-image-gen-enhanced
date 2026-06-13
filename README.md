@@ -1,4 +1,8 @@
-# Quick Image Gen
+# Quick Image Gen (Enhanced)
+
+> **Fork 自 [platberlitz/sillytavern-image-gen](https://github.com/platberlitz/sillytavern-image-gen)**，包含额外的问题修复和功能增强。详见[修改记录](#修改记录)。
+>
+> ⚠️ **注意**：生图模型预设和 Prompt 预设不会从上游仓库自动继承，切换到本仓库后需要重新配置。
 
 Image generation in SillyTavern. 17 backends, 44 style presets, three LLM prompt modes, a two-step chat-scene prompt pipeline, contextual filters, batch generation, and auto-insert.
 
@@ -355,6 +359,19 @@ SillyTavern server plugins are not sandboxed. Only install server plugins from d
 ## Credits
 
 - Veda: ComfyUI Proxy method
+
+## 修改记录
+
+基于上游 [platberlitz/sillytavern-image-gen](https://github.com/platberlitz/sillytavern-image-gen) 的修改。
+
+### 问题修复
+
+- **修复 Palette 按钮加载动画导致聊天区域滚动条闪烁**：将 `fa-spin` 旋转动画从按钮外层 `<div>` 移至内部 `<i>` 图标元素，避免整个按钮旋转触发 `#chat` flex 布局的 sub-pixel 重算。同时为 `#chat` 添加 `min-height: 0` 修复 flex-overflow 反模式。([commit](https://github.com/Yam0214/sillytavern-image-gen-enhanced/commit/555f8b4))
+- **修复 `userDesc` 在未设置 persona 时回退为空**：当 `powerUserSettings.persona_description` 存在时作为 `userDesc` 的兜底值，避免用户描述缺失。([commit](https://github.com/Yam0214/sillytavern-image-gen-enhanced/commit/362a341))
+
+### 功能添加
+
+*（暂无，将在后续版本中添加）*
 
 ## License
 

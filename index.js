@@ -5306,6 +5306,7 @@ Tags:`;
         instructionWithEntropy += prefillHint;
 
         log(isCustom ? "Custom instruction mode" : "Built-in instruction mode");
+        log(`LLM instruction sent:\n${instruction}`);
 
         // Prefer a standalone request path so the helper prompt can use prefill and avoid ambient chat leakage.
         // Fallback to the quiet prompt path if standalone generation is unavailable.

@@ -360,6 +360,53 @@ SillyTavern server plugins are not sandboxed. Only install server plugins from d
 
 - Veda: ComfyUI Proxy method
 
+## 归档分支
+
+### `feature/image-hosting` — 图床上传功能（已归档）
+
+实现自定义图床上传，将生成的图片上传至外部图床服务并使用图床 URL 插入对话。
+
+**状态：已归档，不再开发。** 根本原因是 CORS 限制导致大部分图床服务无法从浏览器端直接上传。
+
+#### 功能实现
+
+- 支持 5 个图床 provider：FreeImage.host、imgbb、Catbox、Telegra.ph、SM.MS
+- 支持自定义图床（Custom endpoint + URL field path）
+- 免 Key 图床：Catbox（匿名上传）
+- 设置面板 UI：provider 下拉、API Key、自定义字段、provider 兼容性/NSFW 提示
+- 画廊 ☁ 标记标识图床图片
+- UI 联动：图床启用时灰掉 saveToServer
+
+#### CORS 测试结果（2026-06）
+
+对主流免费图床进行了 `curl -I` 和 `curl -X OPTIONS` CORS 头测试：
+
+| Provider | CORS 支持 | `access-control-allow-origin` | OPTIONS preflight | 客户端直连 | NSFW |
+| --- | --- | --- | --- | --- | --- |
+| **imgbb** | ✅ | `*` | ✅ | ✅ | ❌ ToS 禁止 |
+| **FreeImage.host** | ❌ | 无 | 无 | ❌ | ✅ |
+| **Catbox** | ❌ | 无 | 无 | ❌ | ✅ |
+| **Telegra.ph** | ❌ | 无 | 无 | ❌ | ⚠️ 不明确 |
+| **SM.MS** | ❌ | 无 | 无 | ❌ | ❌ 中国服务审核 |
+| **tmpfiles.org** | ✅ | `*` | ✅ | ✅ | ❓ 临时文件 |
+
+#### 结论
+
+**免费 + 免 Key + CORS 支持 + NSFW 友好的图床服务不存在。**
+
+- imgbb 是唯一支持 CORS 的持久化图床，但 ToS 禁止 NSFW，且需要 API Key
+- NSFW 友好的图床（Catbox、FreeImage）均不支持 CORS，浏览器端无法直接上传
+- SillyTavern 的 `/proxy/` 端点无法正确转发 POST body（urlencoded 和 multipart 均返回目标站点首页）
+- 公共 CORS 代理（corsproxy.io、allorigins.win）对 POST 请求不稳定（403/413/522）
+
+**可行方案需要 server-plugin 中转**（服务端上传），但这对云酒馆用户不可行（无法要求管理员安装插件并重启服务）。
+
+#### 技术发现
+
+- ST 的 `getRequestHeaders()` 返回 `Content-Type: application/json`，会覆盖 urlencoded 的 Content-Type
+- ST 的 `/proxy/` 端点虽然返回 200 OK，但响应体是目标网站的 HTML 首页，说明 POST body 未被正确转发
+- ST server-plugin 在启动时加载，运行中不支持热更新
+
 ## 修改记录
 
 基于上游 [platberlitz/sillytavern-image-gen](https://github.com/platberlitz/sillytavern-image-gen) 的修改。

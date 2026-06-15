@@ -12632,14 +12632,51 @@ function createUI() {
                     <input id="qig-auto-insert" type="checkbox" ${s.autoInsert ? "checked" : ""}>
                     <span>Auto-insert into chat (skip popup)</span>
                 </label>
-                <div class="qig-control-grid">
+                <label class="checkbox_label" style="margin-left:16px;opacity:${s.autoInsert ? "1" : "0.6"};">
+                    <input id="qig-insert-hidden-reply" type="checkbox" ${s.insertAsHiddenReply ? "checked" : ""} ${s.autoInsert ? "" : "disabled"}>
+                    <span>Send as hidden reply (prevents payload errors)</span>
+                </label>
+                <label class="checkbox_label" style="margin-left:16px;margin-top:4px;">
+                    <input id="qig-image-hosting-enabled" type="checkbox" ${s.imageHostingEnabled ? "checked" : ""}>
+                    <span>Upload to image host ☁</span>
+                </label>
+                <div id="qig-image-hosting-options" style="display:${s.imageHostingEnabled ? "block" : "none"};margin-left:32px;margin-top:6px;">
+                    <div class="qig-control-grid">
+                        <div class="qig-field">
+                            <label>Provider</label>
+                            <select id="qig-image-hosting-provider">
+                                <option value="smms" ${s.imageHostingProvider === "smms" ? "selected" : ""}>SM.MS (recommended)</option>
+                                <option value="imgbb" ${s.imageHostingProvider === "imgbb" ? "selected" : ""}>imgbb</option>
+                                <option value="custom" ${s.imageHostingProvider === "custom" ? "selected" : ""}>Custom</option>
+                            </select>
+                        </div>
+                        <div class="qig-field">
+                            <label>API Key</label>
+                            <input id="qig-image-hosting-key" type="password" value="${esc(s.imageHostingApiKey)}" placeholder="Enter API token" autocomplete="off">
+                        </div>
+                    </div>
+                    <div id="qig-image-hosting-custom" style="display:${s.imageHostingProvider === "custom" ? "block" : "none"};">
+                        <div class="qig-control-grid">
+                            <div class="qig-field">
+                                <label>Endpoint URL</label>
+                                <input id="qig-image-hosting-endpoint" type="text" value="${esc(s.imageHostingCustomEndpoint)}" placeholder="https://your-host.com/api/upload">
+                            </div>
+                            <div class="qig-field">
+                                <label>URL Response Field</label>
+                                <input id="qig-image-hosting-url-field" type="text" value="${esc(s.imageHostingCustomUrlField)}" placeholder="data.url">
+                                <small>JSON path to extract the image URL from response.</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="qig-control-grid" style="margin-top:8px;">
                     <div class="qig-field">
                         <label>Chat insert output</label>
                         <select id="qig-output-mode">
                             <option value="inline" ${normalizeOutputMode(s.outputMode) === "inline" ? "selected" : ""}>Inline data URL</option>
                             <option value="image_url" ${normalizeOutputMode(s.outputMode) === "image_url" ? "selected" : ""}>image_url (URL)</option>
                         </select>
-                        <small>Use image_url for URL-based chat media. Inline data can be saved to the ST server automatically.</small>
+                        <small>${s.imageHostingEnabled ? '☁ Image host enabled → <b>image_url</b> recommended for cross-device access.' : 'Use image_url for URL-based chat media. Inline data can be saved to the ST server automatically.'}</small>
                     </div>
                     <div class="qig-field">
                         <label>Manual insert target</label>
@@ -12651,10 +12688,6 @@ function createUI() {
                         <small>Used when inserting without a specific target message.</small>
                     </div>
                 </div>
-                <label class="checkbox_label" style="margin-left:16px;opacity:${s.autoInsert ? "1" : "0.6"};">
-                    <input id="qig-insert-hidden-reply" type="checkbox" ${s.insertAsHiddenReply ? "checked" : ""} ${s.autoInsert ? "" : "disabled"}>
-                    <span>Send as hidden reply (prevents payload errors)</span>
-                </label>
                 <label class="checkbox_label" style="margin-top:4px;">
                     <input id="qig-save-to-server" type="checkbox" ${s.saveToServer ? "checked" : ""} ${s.imageHostingEnabled ? "disabled" : ""}>
                     <span>Save images to ST server (persistent)${s.imageHostingEnabled ? ' <small style="opacity:0.6">(disabled by image hosting)</small>' : ""}</span>
@@ -12663,45 +12696,6 @@ function createUI() {
                     <input id="qig-save-to-server-meta" type="checkbox" ${s.saveToServerEmbedMetadata ? "checked" : ""} ${(s.imageHostingEnabled || !s.saveToServer) ? "disabled" : ""}>
                     <span>Embed metadata in saved PNGs</span>
                 </label>
-
-                <div style="margin-top:8px;padding:8px 12px;background:rgba(233,69,96,0.06);border-radius:6px;border:1px solid rgba(233,69,96,0.15);">
-                    <label class="checkbox_label" style="margin:0;">
-                        <input id="qig-image-hosting-enabled" type="checkbox" ${s.imageHostingEnabled ? "checked" : ""}>
-                        <span>Upload to image host</span>
-                    </label>
-                    <div id="qig-image-hosting-options" style="display:${s.imageHostingEnabled ? "block" : "none"};margin-top:8px;">
-                        <div class="qig-control-grid">
-                            <div class="qig-field">
-                                <label>Provider</label>
-                                <select id="qig-image-hosting-provider">
-                                    <option value="smms" ${s.imageHostingProvider === "smms" ? "selected" : ""}>SM.MS (recommended)</option>
-                                    <option value="imgbb" ${s.imageHostingProvider === "imgbb" ? "selected" : ""}>imgbb</option>
-                                    <option value="custom" ${s.imageHostingProvider === "custom" ? "selected" : ""}>Custom</option>
-                                </select>
-                            </div>
-                            <div class="qig-field">
-                                <label>API Key</label>
-                                <input id="qig-image-hosting-key" type="password" value="${esc(s.imageHostingApiKey)}" placeholder="Enter API token" autocomplete="off">
-                            </div>
-                        </div>
-                        <div id="qig-image-hosting-custom" style="display:${s.imageHostingProvider === "custom" ? "block" : "none"};">
-                            <div class="qig-control-grid">
-                                <div class="qig-field">
-                                    <label>Endpoint URL</label>
-                                    <input id="qig-image-hosting-endpoint" type="text" value="${esc(s.imageHostingCustomEndpoint)}" placeholder="https://your-host.com/api/upload">
-                                </div>
-                                <div class="qig-field">
-                                    <label>URL Response Field</label>
-                                    <input id="qig-image-hosting-url-field" type="text" value="${esc(s.imageHostingCustomUrlField)}" placeholder="data.url">
-                                    <small>JSON path to extract the image URL from response.</small>
-                                </div>
-                            </div>
-                        </div>
-                        <div style="margin-top:4px;font-size:11px;opacity:0.7;">
-                            💡 Recommended: set Chat Insert Output to <b>image_url</b> for cross-device compatibility.
-                        </div>
-                    </div>
-                </div>
 
                 <div class="qig-control-grid">
                     <div class="qig-field qig-field--full">

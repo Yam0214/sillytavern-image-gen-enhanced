@@ -15823,8 +15823,9 @@ async function uploadToImageHost(url, settings) {
         const stHeaders = typeof getRequestHeaders === "function" ? getRequestHeaders() : {};
         let proxyHeaders, proxyBody;
         if (provider.bodyType === "urlencoded") {
-            // URLSearchParams: keep Content-Type, send body as string to avoid ST body-parser issues
-            proxyHeaders = { ...stHeaders, ...extraHeaders };
+            // URLSearchParams: force correct Content-Type (override getRequestHeaders' application/json)
+            const { "Content-Type": _drop, ...safeStHeaders } = stHeaders;
+            proxyHeaders = { ...safeStHeaders, ...extraHeaders, "Content-Type": "application/x-www-form-urlencoded" };
             proxyBody = body.toString();
         } else {
             // FormData/multipart: strip Content-Type so browser generates boundary

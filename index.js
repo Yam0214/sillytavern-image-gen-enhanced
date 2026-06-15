@@ -15741,37 +15741,39 @@ function getImageHostingProvider(providerId) {
 async function uploadToImageHost(url, settings) {
     const s = settings || getSettings();
     const providerId = s.imageHostingProvider || "smms";
-    const provider = getImageHostingProvider(providerId);
-    if (!provider) throw new Error(`Unknown image hosting provider: ${providerId}`);
 
     const { buffer, contentType } = await fetchImageBuffer(url);
     const formatInfo = detectImageFormat(buffer, contentType, url);
     const filename = `qig_${Date.now()}.${formatInfo.ext}`;
 
-    const request = await provider.buildForm(buffer, filename, s.imageHostingApiKey, s);
-    const res = await corsFetch(request.url, {
+    // Convert buffer to base64 for server-plugin relay
+    let binary = "";
+    for (let i = 0; i < buffer.byteLength; i++) binary += String.fromCharCode(new Uint8Array(buffer)[i]);
+    const imageBase64 = btoa(binary);
+
+    const relayUrl = `/api/plugins/quick-image-gen-relay/image-hosting/upload`;
+    const stHeaders = typeof getRequestHeaders === "function" ? getRequestHeaders() : {};
+    const res = await fetch(relayUrl, {
         method: "POST",
-        headers: request.headers,
-        body: request.body,
+        headers: { ...stHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({
+            provider: providerId,
+            imageBase64,
+            filename,
+            apiKey: s.imageHostingApiKey || "",
+            customEndpoint: s.imageHostingCustomEndpoint || "",
+            customUrlField: s.imageHostingCustomUrlField || "",
+        }),
     });
 
     if (!res.ok) {
         const text = await res.text().catch(() => "");
-        throw new Error(`Image hosting upload failed (${res.status}): ${text.substring(0, 200)}`);
+        throw new Error(`Image hosting upload failed (${res.status}): ${text.substring(0, 300)}`);
     }
 
-    // Some providers (e.g. Catbox) return plain text URL, others return JSON
-    const responseText = await res.text();
-    let imageUrl;
-    try {
-        const json = JSON.parse(responseText);
-        imageUrl = provider.extractUrl(json, s);
-    } catch {
-        // Not JSON — try extracting URL from plain text
-        imageUrl = provider.extractUrl(responseText, s);
-    }
-    if (!imageUrl) throw new Error("Failed to extract image URL from hosting response");
-    return imageUrl;
+    const data = await res.json();
+    if (!data.url) throw new Error("Image hosting relay returned no URL");
+    return data.url;
 }
 
 async function maybeFinalizeUrl(url, prompt, negative, settings) {

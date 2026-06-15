@@ -81,6 +81,129 @@ async function handleCivitai(req, res) {
     }
 }
 
+async function handleImageHostingUpload(req, res) {
+    try {
+        const providerId = requireString(req.body?.provider, "provider");
+        const imageBase64 = requireString(req.body?.imageBase64, "imageBase64");
+        const filename = requireString(req.body?.filename, "filename");
+        const apiKey = req.body?.apiKey || "";
+        const customEndpoint = req.body?.customEndpoint || "";
+        const customUrlField = req.body?.customUrlField || "";
+
+        const providers = {
+            catbox: {
+                endpoint: "https://catbox.moe/user/api.php",
+                buildBody(buf) {
+                    const fd = new FormData();
+                    fd.set("reqtype", "fileupload");
+                    fd.set("fileToUpload", new Blob([buf]), filename);
+                    return fd;
+                },
+                extractUrl(text) { return text.trim(); },
+            },
+            telegraph: {
+                endpoint: "https://telegra.ph/upload",
+                buildBody(buf) {
+                    const fd = new FormData();
+                    fd.set("file", new Blob([buf]), filename);
+                    return fd;
+                },
+                extractUrl(json) {
+                    return "https://telegra.ph" + (Array.isArray(json) ? json[0]?.src : json?.[0]?.src);
+                },
+            },
+            smms: {
+                endpoint: "https://sm.ms/api/v2/upload",
+                buildBody(buf) {
+                    const fd = new FormData();
+                    fd.set("smfile", new Blob([buf]), filename);
+                    return fd;
+                },
+                extractUrl(json) { return json?.data?.url || json?.images; },
+            },
+            imgbb: {
+                endpoint: "https://api.imgbb.com/1/upload",
+                buildBody(buf) {
+                    const fd = new FormData();
+                    fd.set("key", apiKey);
+                    fd.set("image", arrayBufferToBase64(buf));
+                    return fd;
+                },
+                extractUrl(json) { return json?.data?.url; },
+            },
+            custom: {
+                endpoint: customEndpoint,
+                buildBody(buf) {
+                    const fd = new FormData();
+                    fd.set("file", new Blob([buf]), filename);
+                    return fd;
+                },
+                extractUrl(json) {
+                    const path = customUrlField || "data.url";
+                    return path.split(".").reduce((o, k) => o?.[k], json);
+                },
+            },
+        };
+
+        const provider = providers[providerId];
+        if (!provider) {
+            sendJson(res, 400, { error: `Unknown image hosting provider: ${providerId}` });
+            return;
+        }
+
+        // Convert base64 to buffer
+        const binaryStr = atob(imageBase64);
+        const buf = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) buf[i] = binaryStr.charCodeAt(i);
+
+        const body = provider.buildBody(buf);
+        const headers = {};
+        if (apiKey && providerId === "smms") {
+            headers["Authorization"] = apiKey;
+        }
+
+        const timeout = withTimeout();
+        try {
+            const upstream = await fetch(provider.endpoint, {
+                method: "POST",
+                headers,
+                body,
+                signal: timeout.signal,
+            });
+
+            const responseText = await upstream.text();
+            if (!upstream.ok) {
+                sendJson(res, upstream.status, { error: `Upload failed (${upstream.status}): ${responseText.substring(0, 300)}` });
+                return;
+            }
+
+            let imageUrl;
+            try {
+                imageUrl = provider.extractUrl(JSON.parse(responseText));
+            } catch {
+                imageUrl = provider.extractUrl(responseText);
+            }
+
+            if (!imageUrl) {
+                sendJson(res, 502, { error: "Failed to extract image URL from hosting response" });
+                return;
+            }
+
+            sendJson(res, 200, { url: imageUrl });
+        } finally {
+            timeout.done();
+        }
+    } catch (error) {
+        sendJson(res, error.status || 500, { error: error.message || "Image hosting upload failed" });
+    }
+}
+
+function arrayBufferToBase64(buf) {
+    let binary = "";
+    for (let i = 0; i < buf.length; i++) binary += String.fromCharCode(buf[i]);
+    return btoa(binary);
+}
+
 async function handleReplicate(req, res) {
     try {
         const action = requireString(req.body?.action, "action");
@@ -113,6 +236,7 @@ async function init(router) {
     router.get("/healthz", (_req, res) => res.sendStatus(204));
     router.post("/civitai", handleCivitai);
     router.post("/replicate", handleReplicate);
+    router.post("/image-hosting/upload", handleImageHostingUpload);
     console.log("Quick Image Gen relay plugin loaded");
 }
 

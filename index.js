@@ -362,6 +362,12 @@ const defaultSettings = {
     insertAsHiddenReply: false,
     saveToServer: false,
     saveToServerEmbedMetadata: true,
+    // Image Hosting
+    imageHostingEnabled: false,
+    imageHostingProvider: "smms",
+    imageHostingApiKey: "",
+    imageHostingCustomEndpoint: "",
+    imageHostingCustomUrlField: "data.url",
     disablePaletteButton: false,
     paletteMode: "direct",
     confirmBeforeGenerate: false,
@@ -7565,14 +7571,17 @@ async function finalizeGeneratedEntry(rawUrl, prompt, negative, settings, option
     const metadataSettings = getMetadataSettings(settings, { resolvedSeed });
     const finalUrl = await maybeFinalizeUrl(rawUrl, prompt, negative, metadataSettings);
     if (!finalUrl) return null;
-    const stableUrl = metadataSettings.saveToServer ? finalUrl : await persistImageUrl(finalUrl);
+    // When saveToServer or imageHosting is active, the URL is already persistent — skip persistImageUrl
+    const stableUrl = (metadataSettings.saveToServer || metadataSettings.imageHostingEnabled) ? finalUrl : await persistImageUrl(finalUrl);
     return createGenerationEntry(stableUrl, prompt, negative, metadataSettings, { ...options, sourceUrl: finalUrl });
 }
 
 async function addToGallery(entryOrUrl) {
     const entry = normalizeGenerationEntry(entryOrUrl);
     if (!entry.url) return null;
-    const persistentUrl = await persistImageUrl(entry.url);
+    // Image-hosted URLs are persistent — skip data URL conversion
+    const isImageHosted = entry.metadataSettings?.imageHostingEnabled && isHttpUrl(entry.url);
+    const persistentUrl = isImageHosted ? entry.url : await persistImageUrl(entry.url);
     const thumbnail = await createThumbnail(persistentUrl);
     const savedEntry = { ...entry, url: persistentUrl, thumbnail, date: entry.date ?? Date.now() };
     sessionGallery.unshift(savedEntry);
@@ -8097,8 +8106,11 @@ function showGallery() {
                 const imgSrc = escapeHtml(item.thumbnail || item.url || "");
                 const snippet = item.prompt ? item.prompt.substring(0, 40) + (item.prompt.length > 40 ? '...' : '') : '';
                 const safeSnippet = escapeHtml(snippet);
+                const isHosted = isHttpUrl(item.url) && !isSameOriginImageUrl(item.url);
+                const hostedBadge = isHosted ? `<div style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.7);color:#4fc3f7;font-size:10px;padding:1px 4px;border-radius:3px;" title="Hosted: ${escapeHtml(item.url)}">☁</div>` : '';
                 return `<div style="position:relative;cursor:pointer;" data-gallery-index="${index}">` +
                     `<img src="${imgSrc}" style="width:100%;border-radius:6px;" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22><text y=%2240%22 x=%2220%22 fill=%22gray%22>expired</text></svg>'">` +
+                    hostedBadge +
                     (snippet ? `<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.7);color:#ccc;font-size:9px;padding:2px 4px;border-radius:0 0 6px 6px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">${safeSnippet}</div>` : '') +
                     `</div>`;
             }).join('') : '<p style="color:#888;">No images yet</p>';
@@ -12644,13 +12656,52 @@ function createUI() {
                     <span>Send as hidden reply (prevents payload errors)</span>
                 </label>
                 <label class="checkbox_label" style="margin-top:4px;">
-                    <input id="qig-save-to-server" type="checkbox" ${s.saveToServer ? "checked" : ""}>
-                    <span>Save images to ST server (persistent)</span>
+                    <input id="qig-save-to-server" type="checkbox" ${s.saveToServer ? "checked" : ""} ${s.imageHostingEnabled ? "disabled" : ""}>
+                    <span>Save images to ST server (persistent)${s.imageHostingEnabled ? ' <small style="opacity:0.6">(disabled by image hosting)</small>' : ""}</span>
                 </label>
-                <label class="checkbox_label" style="margin-left:16px;opacity:${s.saveToServer ? "1" : "0.6"};">
-                    <input id="qig-save-to-server-meta" type="checkbox" ${s.saveToServerEmbedMetadata ? "checked" : ""} ${s.saveToServer ? "" : "disabled"}>
+                <label class="checkbox_label" style="margin-left:16px;opacity:${(!s.imageHostingEnabled && s.saveToServer) ? "1" : "0.6"};">
+                    <input id="qig-save-to-server-meta" type="checkbox" ${s.saveToServerEmbedMetadata ? "checked" : ""} ${(s.imageHostingEnabled || !s.saveToServer) ? "disabled" : ""}>
                     <span>Embed metadata in saved PNGs</span>
                 </label>
+
+                <div style="margin-top:8px;padding:8px 12px;background:rgba(233,69,96,0.06);border-radius:6px;border:1px solid rgba(233,69,96,0.15);">
+                    <label class="checkbox_label" style="margin:0;">
+                        <input id="qig-image-hosting-enabled" type="checkbox" ${s.imageHostingEnabled ? "checked" : ""}>
+                        <span>Upload to image host</span>
+                    </label>
+                    <div id="qig-image-hosting-options" style="display:${s.imageHostingEnabled ? "block" : "none"};margin-top:8px;">
+                        <div class="qig-control-grid">
+                            <div class="qig-field">
+                                <label>Provider</label>
+                                <select id="qig-image-hosting-provider">
+                                    <option value="smms" ${s.imageHostingProvider === "smms" ? "selected" : ""}>SM.MS (recommended)</option>
+                                    <option value="imgbb" ${s.imageHostingProvider === "imgbb" ? "selected" : ""}>imgbb</option>
+                                    <option value="custom" ${s.imageHostingProvider === "custom" ? "selected" : ""}>Custom</option>
+                                </select>
+                            </div>
+                            <div class="qig-field">
+                                <label>API Key</label>
+                                <input id="qig-image-hosting-key" type="password" value="${esc(s.imageHostingApiKey)}" placeholder="Enter API token" autocomplete="off">
+                            </div>
+                        </div>
+                        <div id="qig-image-hosting-custom" style="display:${s.imageHostingProvider === "custom" ? "block" : "none"};">
+                            <div class="qig-control-grid">
+                                <div class="qig-field">
+                                    <label>Endpoint URL</label>
+                                    <input id="qig-image-hosting-endpoint" type="text" value="${esc(s.imageHostingCustomEndpoint)}" placeholder="https://your-host.com/api/upload">
+                                </div>
+                                <div class="qig-field">
+                                    <label>URL Response Field</label>
+                                    <input id="qig-image-hosting-url-field" type="text" value="${esc(s.imageHostingCustomUrlField)}" placeholder="data.url">
+                                    <small>JSON path to extract the image URL from response.</small>
+                                </div>
+                            </div>
+                        </div>
+                        <div style="margin-top:4px;font-size:11px;opacity:0.7;">
+                            💡 Recommended: set Chat Insert Output to <b>image_url</b> for cross-device compatibility.
+                        </div>
+                    </div>
+                </div>
 
                 <div class="qig-control-grid">
                     <div class="qig-field qig-field--full">
@@ -13454,6 +13505,65 @@ function createUI() {
         };
     }
     updateSaveToServerMetaState();
+
+    // Image Hosting event bindings
+    const imageHostingEnabledEl = document.getElementById("qig-image-hosting-enabled");
+    const imageHostingOptionsEl = document.getElementById("qig-image-hosting-options");
+    const imageHostingProviderEl = document.getElementById("qig-image-hosting-provider");
+    const imageHostingKeyEl = document.getElementById("qig-image-hosting-key");
+    const imageHostingEndpointEl = document.getElementById("qig-image-hosting-endpoint");
+    const imageHostingUrlFieldEl = document.getElementById("qig-image-hosting-url-field");
+    const imageHostingCustomEl = document.getElementById("qig-image-hosting-custom");
+
+    const updateImageHostingUI = () => {
+        const enabled = !!imageHostingEnabledEl?.checked;
+        if (imageHostingOptionsEl) imageHostingOptionsEl.style.display = enabled ? "block" : "none";
+        // Disable saveToServer when image hosting is enabled
+        if (saveToServerEl) {
+            saveToServerEl.disabled = enabled;
+            const label = saveToServerEl.closest("label");
+            if (label) label.style.opacity = enabled ? "0.6" : "1";
+        }
+        updateSaveToServerMetaState();
+        // Update custom provider fields visibility
+        const provider = imageHostingProviderEl?.value || "smms";
+        if (imageHostingCustomEl) imageHostingCustomEl.style.display = provider === "custom" ? "block" : "none";
+    };
+
+    if (imageHostingEnabledEl) {
+        imageHostingEnabledEl.onchange = (e) => {
+            getSettings().imageHostingEnabled = e.target.checked;
+            saveSettingsDebounced();
+            updateImageHostingUI();
+        };
+    }
+    if (imageHostingProviderEl) {
+        imageHostingProviderEl.onchange = (e) => {
+            getSettings().imageHostingProvider = e.target.value;
+            saveSettingsDebounced();
+            updateImageHostingUI();
+        };
+    }
+    if (imageHostingKeyEl) {
+        imageHostingKeyEl.onchange = (e) => {
+            getSettings().imageHostingApiKey = e.target.value;
+            saveSettingsDebounced();
+        };
+    }
+    if (imageHostingEndpointEl) {
+        imageHostingEndpointEl.onchange = (e) => {
+            getSettings().imageHostingCustomEndpoint = e.target.value;
+            saveSettingsDebounced();
+        };
+    }
+    if (imageHostingUrlFieldEl) {
+        imageHostingUrlFieldEl.onchange = (e) => {
+            getSettings().imageHostingCustomUrlField = e.target.value;
+            saveSettingsDebounced();
+        };
+    }
+    updateImageHostingUI();
+
     document.getElementById("qig-disable-palette").onchange = (e) => {
         getSettings().disablePaletteButton = e.target.checked;
         saveSettingsDebounced();
@@ -15402,6 +15512,8 @@ function getMetadataSettings(s, options = {}) {
         model: getProviderModelId(s, provider),
         saveToServer: s.saveToServer,
         saveToServerEmbedMetadata: s.saveToServerEmbedMetadata,
+        imageHostingEnabled: !!s.imageHostingEnabled,
+        imageHostingProvider: s.imageHostingProvider || "smms",
     };
 
     if (provider === "local") {
@@ -15513,8 +15625,110 @@ async function saveImageToServer(url, prompt, negative, settings) {
     return await saveBase64AsFile(base64, subFolder, filename, formatInfo.ext);
 }
 
+// === Image Hosting Providers ===
+const IMAGE_HOSTING_PROVIDERS = {
+    smms: {
+        name: "SM.MS",
+        endpoint: "https://sm.ms/api/v2/upload",
+        async buildForm(buffer, filename, apiKey, _settings) {
+            const blob = new Blob([buffer]);
+            const form = new FormData();
+            form.append("smfile", blob, filename);
+            return {
+                url: "https://sm.ms/api/v2/upload",
+                headers: apiKey ? { Authorization: apiKey } : {},
+                body: form,
+            };
+        },
+        extractUrl(json) {
+            return json?.data?.url || json?.images || null;
+        },
+    },
+    imgbb: {
+        name: "imgbb",
+        endpoint: "https://api.imgbb.com/1/upload",
+        async buildForm(buffer, filename, apiKey, _settings) {
+            const base64 = arrayBufferToBase64(buffer);
+            const form = new FormData();
+            form.append("key", apiKey || "");
+            form.append("image", base64);
+            return {
+                url: "https://api.imgbb.com/1/upload",
+                headers: {},
+                body: form,
+            };
+        },
+        extractUrl(json) {
+            return json?.data?.url || null;
+        },
+    },
+    custom: {
+        name: "Custom",
+        endpoint: "",
+        async buildForm(buffer, filename, apiKey, settings) {
+            const endpoint = settings?.imageHostingCustomEndpoint;
+            if (!endpoint) throw new Error("Custom image hosting endpoint not configured");
+            const blob = new Blob([buffer]);
+            const form = new FormData();
+            form.append("image", blob, filename);
+            return {
+                url: endpoint,
+                headers: apiKey ? { Authorization: apiKey } : {},
+                body: form,
+            };
+        },
+        extractUrl(json, settings) {
+            const field = settings?.imageHostingCustomUrlField || "data.url";
+            return field.split(".").reduce((obj, key) => obj?.[key], json) || null;
+        },
+    },
+};
+
+function getImageHostingProvider(providerId) {
+    return IMAGE_HOSTING_PROVIDERS[providerId] || null;
+}
+
+async function uploadToImageHost(url, settings) {
+    const s = settings || getSettings();
+    const providerId = s.imageHostingProvider || "smms";
+    const provider = getImageHostingProvider(providerId);
+    if (!provider) throw new Error(`Unknown image hosting provider: ${providerId}`);
+
+    const { buffer, contentType } = await fetchImageBuffer(url);
+    const formatInfo = detectImageFormat(buffer, contentType, url);
+    const filename = `qig_${Date.now()}.${formatInfo.ext}`;
+
+    const request = await provider.buildForm(buffer, filename, s.imageHostingApiKey, s);
+    const res = await corsFetch(request.url, {
+        method: "POST",
+        headers: request.headers,
+        body: request.body,
+    });
+
+    if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Image hosting upload failed (${res.status}): ${text.substring(0, 200)}`);
+    }
+
+    const json = await res.json();
+    const imageUrl = provider.extractUrl(json, s);
+    if (!imageUrl) throw new Error("Failed to extract image URL from hosting response");
+    return imageUrl;
+}
+
 async function maybeFinalizeUrl(url, prompt, negative, settings) {
     const s = settings || getSettings();
+
+    // Image hosting takes priority over saveToServer
+    if (s?.imageHostingEnabled) {
+        try {
+            return await uploadToImageHost(url, s);
+        } catch (e) {
+            warnSaveToServer(`Image hosting upload failed: ${e.message}`);
+            // Fall through to saveToServer if enabled
+        }
+    }
+
     if (!s?.saveToServer) return url;
     if (typeof saveBase64AsFile !== "function") {
         warnSaveToServer("Save to server unavailable (missing API)");

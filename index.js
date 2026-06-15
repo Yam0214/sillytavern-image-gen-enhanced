@@ -12644,14 +12644,26 @@ function createUI() {
                         <div class="qig-field">
                             <label>Provider</label>
                             <select id="qig-image-hosting-provider">
-                                <option value="catbox" ${s.imageHostingProvider === "catbox" ? "selected" : ""}>Catbox (free, no key)</option>
-                                <option value="telegraph" ${s.imageHostingProvider === "telegraph" ? "selected" : ""}>Telegra.ph (free, no key)</option>
-                                <option value="smms" ${s.imageHostingProvider === "smms" ? "selected" : ""}>SM.MS</option>
+                                <option value="freeimage" ${s.imageHostingProvider === "freeimage" ? "selected" : ""}>FreeImage.host ⭐ (NSFW OK)</option>
                                 <option value="imgbb" ${s.imageHostingProvider === "imgbb" ? "selected" : ""}>imgbb</option>
+                                <option value="catbox" ${s.imageHostingProvider === "catbox" ? "selected" : ""}>Catbox (no key)</option>
+                                <option value="telegraph" ${s.imageHostingProvider === "telegraph" ? "selected" : ""}>Telegra.ph (no key)</option>
+                                <option value="smms" ${s.imageHostingProvider === "smms" ? "selected" : ""}>SM.MS</option>
                                 <option value="custom" ${s.imageHostingProvider === "custom" ? "selected" : ""}>Custom</option>
                             </select>
+                            <small id="qig-hosting-provider-hint">${(() => {
+                                const hints = {
+                                    freeimage: "✅ NSFW friendly. Needs free API key from freeimage.host. Works via ST proxy (zero config).",
+                                    imgbb: "⚠️ ToS prohibits NSFW. Needs free API key. Works via ST proxy.",
+                                    catbox: "✅ NSFW friendly, no key. Uses multipart upload — may fail without CORS proxy enabled in ST.",
+                                    telegraph: "⚠️ NSFW unclear. No key. Uses multipart — may fail without CORS proxy.",
+                                    smms: "❌ NSFW blocked. Chinese service, content moderated. Key optional.",
+                                    custom: "Custom endpoint. Must accept the configured body format.",
+                                };
+                                return hints[s.imageHostingProvider] || hints.freeimage;
+                            })()}</small>
                         </div>
-                        <div class="qig-field" id="qig-image-hosting-key-field" style="display:${["smms","imgbb"].includes(s.imageHostingProvider) ? "block" : "none"};">
+                        <div class="qig-field" id="qig-image-hosting-key-field" style="display:${["smms","imgbb","freeimage"].includes(s.imageHostingProvider) ? "block" : "none"};">
                             <label>API Key ${(() => { const p = IMAGE_HOSTING_PROVIDERS?.[s.imageHostingProvider]; return p?.keyOptional ? '<small>(optional)</small>' : ''; })()}</label>
                             <input id="qig-image-hosting-key" type="password" value="${esc(s.imageHostingApiKey)}" placeholder="Enter API token" autocomplete="off">
                         </div>
@@ -13525,7 +13537,20 @@ function createUI() {
         if (imageHostingCustomEl) imageHostingCustomEl.style.display = provider === "custom" ? "block" : "none";
         // Show API Key field only for providers that need it
         const keyField = document.getElementById("qig-image-hosting-key-field");
-        if (keyField) keyField.style.display = ["smms", "imgbb"].includes(provider) ? "block" : "none";
+        if (keyField) keyField.style.display = ["smms", "imgbb", "freeimage"].includes(provider) ? "block" : "none";
+        // Update provider hint
+        const hintEl = document.getElementById("qig-hosting-provider-hint");
+        if (hintEl) {
+            const hints = {
+                freeimage: "✅ NSFW friendly. Needs free API key from freeimage.host. Works via ST proxy (zero config).",
+                imgbb: "⚠️ ToS prohibits NSFW. Needs free API key. Works via ST proxy.",
+                catbox: "✅ NSFW friendly, no key. Uses multipart upload — may fail without CORS proxy enabled in ST.",
+                telegraph: "⚠️ NSFW unclear. No key. Uses multipart — may fail without CORS proxy.",
+                smms: "❌ NSFW blocked. Chinese service, content moderated. Key optional.",
+                custom: "Custom endpoint. Must accept the configured body format.",
+            };
+            hintEl.textContent = hints[provider] || hints.freeimage;
+        }
     };
 
     if (imageHostingEnabledEl) {
@@ -15696,19 +15721,41 @@ const IMAGE_HOSTING_PROVIDERS = {
         name: "imgbb",
         needsKey: true,
         endpoint: "https://api.imgbb.com/1/upload",
-        async buildForm(buffer, filename, apiKey, _settings) {
+        bodyType: "urlencoded",
+        async buildForm(buffer, _filename, apiKey, _settings) {
             const base64 = arrayBufferToBase64(buffer);
-            const form = new FormData();
-            form.append("key", apiKey || "");
-            form.append("image", base64);
+            const params = new URLSearchParams();
+            params.append("key", apiKey || "");
+            params.append("image", base64);
             return {
                 url: "https://api.imgbb.com/1/upload",
-                headers: {},
-                body: form,
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: params,
             };
         },
         extractUrl(json) {
             return json?.data?.url || null;
+        },
+    },
+    freeimage: {
+        name: "FreeImage.host (NSFW OK)",
+        needsKey: true,
+        endpoint: "https://freeimage.host/api/1/upload",
+        bodyType: "urlencoded",
+        async buildForm(buffer, _filename, apiKey, _settings) {
+            const base64 = arrayBufferToBase64(buffer);
+            const params = new URLSearchParams();
+            params.append("key", apiKey || "");
+            params.append("source", base64);
+            params.append("format", "json");
+            return {
+                url: "https://freeimage.host/api/1/upload",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: params,
+            };
+        },
+        extractUrl(json) {
+            return json?.image?.url || json?.image?.display_url || null;
         },
     },
     custom: {
@@ -15771,23 +15818,33 @@ async function uploadToImageHost(url, settings) {
         if (e.name !== "TypeError") throw e; // Not a CORS error, rethrow
     }
 
-    // Strategy 2: ST proxy — strip Content-Type so browser generates multipart boundary
+    // Strategy 2: ST proxy
     try {
         const stHeaders = typeof getRequestHeaders === "function" ? getRequestHeaders() : {};
-        const { "Content-Type": _drop, ...safeHeaders } = { ...stHeaders, ...extraHeaders };
+        let proxyHeaders, proxyBody;
+        if (provider.bodyType === "urlencoded") {
+            // URLSearchParams: keep Content-Type, send body as string to avoid ST body-parser issues
+            proxyHeaders = { ...stHeaders, ...extraHeaders };
+            proxyBody = body.toString();
+        } else {
+            // FormData/multipart: strip Content-Type so browser generates boundary
+            const { "Content-Type": _drop, ...safeHeaders } = { ...stHeaders, ...extraHeaders };
+            proxyHeaders = safeHeaders;
+            proxyBody = body;
+        }
         const proxyUrl = `/proxy/${targetUrl}`;
-        const res = await fetch(proxyUrl, { method: "POST", headers: safeHeaders, body });
+        const res = await fetch(proxyUrl, { method: "POST", headers: proxyHeaders, body: proxyBody });
         if (res.ok) return await parseResponse(res);
-    } catch { /* ST proxy can't handle multipart, fall through */ }
+    } catch { /* ST proxy can't handle this body type, fall through */ }
 
-    // Strategy 3: Public CORS proxy — forwards multipart body as-is with CORS headers
+    // Strategy 3: Public CORS proxy — forwards body as-is with CORS headers
     const corsProxies = [
         (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
         (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
     ];
     for (const buildUrl of corsProxies) {
         try {
-            const res = await fetch(buildUrl(targetUrl), { method: "POST", body });
+            const res = await fetch(buildUrl(targetUrl), { method: "POST", headers: extraHeaders, body });
             if (res.ok) return await parseResponse(res);
         } catch { /* try next proxy */ }
     }

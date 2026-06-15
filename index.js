@@ -364,7 +364,7 @@ const defaultSettings = {
     saveToServerEmbedMetadata: true,
     // Image Hosting
     imageHostingEnabled: false,
-    imageHostingProvider: "smms",
+    imageHostingProvider: "catbox",
     imageHostingApiKey: "",
     imageHostingCustomEndpoint: "",
     imageHostingCustomUrlField: "data.url",
@@ -12645,13 +12645,15 @@ function createUI() {
                         <div class="qig-field">
                             <label>Provider</label>
                             <select id="qig-image-hosting-provider">
-                                <option value="smms" ${s.imageHostingProvider === "smms" ? "selected" : ""}>SM.MS (recommended)</option>
+                                <option value="catbox" ${s.imageHostingProvider === "catbox" ? "selected" : ""}>Catbox (free, no key)</option>
+                                <option value="telegraph" ${s.imageHostingProvider === "telegraph" ? "selected" : ""}>Telegra.ph (free, no key)</option>
+                                <option value="smms" ${s.imageHostingProvider === "smms" ? "selected" : ""}>SM.MS</option>
                                 <option value="imgbb" ${s.imageHostingProvider === "imgbb" ? "selected" : ""}>imgbb</option>
                                 <option value="custom" ${s.imageHostingProvider === "custom" ? "selected" : ""}>Custom</option>
                             </select>
                         </div>
-                        <div class="qig-field">
-                            <label>API Key</label>
+                        <div class="qig-field" id="qig-image-hosting-key-field" style="display:${["smms","imgbb"].includes(s.imageHostingProvider) ? "block" : "none"};">
+                            <label>API Key ${(() => { const p = IMAGE_HOSTING_PROVIDERS?.[s.imageHostingProvider]; return p?.keyOptional ? '<small>(optional)</small>' : ''; })()}</label>
                             <input id="qig-image-hosting-key" type="password" value="${esc(s.imageHostingApiKey)}" placeholder="Enter API token" autocomplete="off">
                         </div>
                     </div>
@@ -13519,9 +13521,12 @@ function createUI() {
             if (label) label.style.opacity = enabled ? "0.6" : "1";
         }
         updateSaveToServerMetaState();
-        // Update custom provider fields visibility
-        const provider = imageHostingProviderEl?.value || "smms";
+        // Update provider-specific fields visibility
+        const provider = imageHostingProviderEl?.value || "catbox";
         if (imageHostingCustomEl) imageHostingCustomEl.style.display = provider === "custom" ? "block" : "none";
+        // Show API Key field only for providers that need it
+        const keyField = document.getElementById("qig-image-hosting-key-field");
+        if (keyField) keyField.style.display = ["smms", "imgbb"].includes(provider) ? "block" : "none";
     };
 
     if (imageHostingEnabledEl) {
@@ -15507,7 +15512,7 @@ function getMetadataSettings(s, options = {}) {
         saveToServer: s.saveToServer,
         saveToServerEmbedMetadata: s.saveToServerEmbedMetadata,
         imageHostingEnabled: !!s.imageHostingEnabled,
-        imageHostingProvider: s.imageHostingProvider || "smms",
+        imageHostingProvider: s.imageHostingProvider || "catbox",
     };
 
     if (provider === "local") {
@@ -15621,8 +15626,58 @@ async function saveImageToServer(url, prompt, negative, settings) {
 
 // === Image Hosting Providers ===
 const IMAGE_HOSTING_PROVIDERS = {
+    catbox: {
+        name: "Catbox (no key needed)",
+        needsKey: false,
+        endpoint: "https://catbox.moe/user/api.php",
+        async buildForm(buffer, filename, _apiKey, _settings) {
+            const blob = new Blob([buffer]);
+            const form = new FormData();
+            form.append("reqtype", "fileupload");
+            form.append("fileToUpload", blob, filename);
+            return {
+                url: "https://catbox.moe/user/api.php",
+                headers: {},
+                body: form,
+            };
+        },
+        extractUrl(json) {
+            if (typeof json === "string") {
+                const url = json.trim();
+                return url.startsWith("https://") ? url : null;
+            }
+            return null;
+        },
+    },
+    telegraph: {
+        name: "Telegra.ph (no key needed)",
+        needsKey: false,
+        endpoint: "https://telegra.ph/upload",
+        async buildForm(buffer, filename, _apiKey, _settings) {
+            const blob = new Blob([buffer]);
+            const form = new FormData();
+            form.append("file", blob, filename);
+            return {
+                url: "https://telegra.ph/upload",
+                headers: {},
+                body: form,
+            };
+        },
+        extractUrl(json) {
+            if (Array.isArray(json) && json[0]?.src) {
+                return `https://telegra.ph${json[0].src}`;
+            }
+            if (typeof json === "string") {
+                const text = json.trim();
+                if (text.startsWith("https://")) return text;
+            }
+            return null;
+        },
+    },
     smms: {
         name: "SM.MS",
+        needsKey: true,
+        keyOptional: true,
         endpoint: "https://sm.ms/api/v2/upload",
         async buildForm(buffer, filename, apiKey, _settings) {
             const blob = new Blob([buffer]);
@@ -15640,6 +15695,7 @@ const IMAGE_HOSTING_PROVIDERS = {
     },
     imgbb: {
         name: "imgbb",
+        needsKey: true,
         endpoint: "https://api.imgbb.com/1/upload",
         async buildForm(buffer, filename, apiKey, _settings) {
             const base64 = arrayBufferToBase64(buffer);
@@ -15658,6 +15714,7 @@ const IMAGE_HOSTING_PROVIDERS = {
     },
     custom: {
         name: "Custom",
+        needsKey: false,
         endpoint: "",
         async buildForm(buffer, filename, apiKey, settings) {
             const endpoint = settings?.imageHostingCustomEndpoint;
@@ -15704,8 +15761,16 @@ async function uploadToImageHost(url, settings) {
         throw new Error(`Image hosting upload failed (${res.status}): ${text.substring(0, 200)}`);
     }
 
-    const json = await res.json();
-    const imageUrl = provider.extractUrl(json, s);
+    // Some providers (e.g. Catbox) return plain text URL, others return JSON
+    const responseText = await res.text();
+    let imageUrl;
+    try {
+        const json = JSON.parse(responseText);
+        imageUrl = provider.extractUrl(json, s);
+    } catch {
+        // Not JSON — try extracting URL from plain text
+        imageUrl = provider.extractUrl(responseText, s);
+    }
     if (!imageUrl) throw new Error("Failed to extract image URL from hosting response");
     return imageUrl;
 }

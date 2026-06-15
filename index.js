@@ -15772,11 +15772,27 @@ async function uploadToImageHost(url, settings) {
     }
 
     // Strategy 2: ST proxy — strip Content-Type so browser generates multipart boundary
-    const stHeaders = typeof getRequestHeaders === "function" ? getRequestHeaders() : {};
-    const { "Content-Type": _drop, ...safeHeaders } = { ...stHeaders, ...extraHeaders };
-    const proxyUrl = `/proxy/${targetUrl}`;
-    const res = await fetch(proxyUrl, { method: "POST", headers: safeHeaders, body });
-    return await parseResponse(res);
+    try {
+        const stHeaders = typeof getRequestHeaders === "function" ? getRequestHeaders() : {};
+        const { "Content-Type": _drop, ...safeHeaders } = { ...stHeaders, ...extraHeaders };
+        const proxyUrl = `/proxy/${targetUrl}`;
+        const res = await fetch(proxyUrl, { method: "POST", headers: safeHeaders, body });
+        if (res.ok) return await parseResponse(res);
+    } catch { /* ST proxy can't handle multipart, fall through */ }
+
+    // Strategy 3: Public CORS proxy — forwards multipart body as-is with CORS headers
+    const corsProxies = [
+        (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+        (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    ];
+    for (const buildUrl of corsProxies) {
+        try {
+            const res = await fetch(buildUrl(targetUrl), { method: "POST", body });
+            if (res.ok) return await parseResponse(res);
+        } catch { /* try next proxy */ }
+    }
+
+    throw new Error("All upload strategies failed. The image hosting service may be temporarily unavailable.");
 }
 
 async function maybeFinalizeUrl(url, prompt, negative, settings) {

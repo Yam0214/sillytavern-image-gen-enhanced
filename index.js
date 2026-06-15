@@ -2329,9 +2329,8 @@ async function corsFetch(url, opts = {}) {
     if (_corsProxyState === -2 && requestHasOwnAuthorization) {
         throw new CorsProxyBasicAuthError(url);
     }
-    if (_corsProxyState === -1) {
-        throw new TypeError(`Cannot reach ${url} (CORS). Enable enableCorsProxy in SillyTavern config.yaml or launch A1111 with --cors-allow-origins=*`);
-    }
+    // Note: _corsProxyState === -1 no longer short-circuits — retry the proxy
+    // in case the user enabled enableCorsProxy since the last failed attempt.
     const proxyUrl = `/proxy/${url}`;
     // Merge ST request headers (CSRF token) into proxy requests
     const stHeaders = typeof getRequestHeaders === 'function' ? getRequestHeaders() : {};

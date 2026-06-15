@@ -15834,9 +15834,13 @@ async function uploadToImageHost(url, settings) {
             proxyBody = body;
         }
         const proxyUrl = `/proxy/${targetUrl}`;
+        console.log("[QIG] ST proxy attempt:", proxyUrl, "headers:", JSON.stringify(proxyHeaders));
         const res = await fetch(proxyUrl, { method: "POST", headers: proxyHeaders, body: proxyBody });
+        console.log("[QIG] ST proxy response:", res.status, res.statusText);
         if (res.ok) return await parseResponse(res);
-    } catch { /* ST proxy can't handle this body type, fall through */ }
+        const errText = await res.text().catch(() => "");
+        console.warn("[QIG] ST proxy failed:", res.status, errText.slice(0, 200));
+    } catch (e) { console.warn("[QIG] ST proxy threw:", e); }
 
     // Strategy 3: Public CORS proxy — forwards body as-is with CORS headers
     const corsProxies = [

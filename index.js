@@ -15740,40 +15740,43 @@ function getImageHostingProvider(providerId) {
 
 async function uploadToImageHost(url, settings) {
     const s = settings || getSettings();
-    const providerId = s.imageHostingProvider || "smms";
+    const providerId = s.imageHostingProvider || "catbox";
+    const provider = IMAGE_HOSTING_PROVIDERS[providerId];
+    if (!provider) throw new Error(`Unknown image hosting provider: ${providerId}`);
 
     const { buffer, contentType } = await fetchImageBuffer(url);
     const formatInfo = detectImageFormat(buffer, contentType, url);
     const filename = `qig_${Date.now()}.${formatInfo.ext}`;
 
-    // Convert buffer to base64 for server-plugin relay
-    let binary = "";
-    for (let i = 0; i < buffer.byteLength; i++) binary += String.fromCharCode(new Uint8Array(buffer)[i]);
-    const imageBase64 = btoa(binary);
+    const { url: targetUrl, headers: extraHeaders, body } = await provider.buildForm(buffer, filename, s.imageHostingApiKey, s);
 
-    const relayUrl = `/api/plugins/quick-image-gen-relay/image-hosting/upload`;
-    const stHeaders = typeof getRequestHeaders === "function" ? getRequestHeaders() : {};
-    const res = await fetch(relayUrl, {
-        method: "POST",
-        headers: { ...stHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify({
-            provider: providerId,
-            imageBase64,
-            filename,
-            apiKey: s.imageHostingApiKey || "",
-            customEndpoint: s.imageHostingCustomEndpoint || "",
-            customUrlField: s.imageHostingCustomUrlField || "",
-        }),
-    });
-
-    if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`Image hosting upload failed (${res.status}): ${text.substring(0, 300)}`);
+    // Parse response using provider-specific logic
+    async function parseResponse(res) {
+        if (!res.ok) {
+            const text = await res.text().catch(() => "");
+            throw new Error(`Image hosting upload failed (${res.status}): ${text.substring(0, 300)}`);
+        }
+        const text = await res.text();
+        const json = (() => { try { return JSON.parse(text); } catch { return null; } })();
+        const resultUrl = provider.extractUrl(json || text, s);
+        if (!resultUrl) throw new Error("Image hosting returned no URL");
+        return resultUrl;
     }
 
-    const data = await res.json();
-    if (!data.url) throw new Error("Image hosting relay returned no URL");
-    return data.url;
+    // Strategy 1: Direct fetch — browser auto-sets correct Content-Type for FormData
+    try {
+        const res = await fetch(targetUrl, { method: "POST", headers: extraHeaders, body });
+        return await parseResponse(res);
+    } catch (e) {
+        if (e.name !== "TypeError") throw e; // Not a CORS error, rethrow
+    }
+
+    // Strategy 2: ST proxy — strip Content-Type so browser generates multipart boundary
+    const stHeaders = typeof getRequestHeaders === "function" ? getRequestHeaders() : {};
+    const { "Content-Type": _drop, ...safeHeaders } = { ...stHeaders, ...extraHeaders };
+    const proxyUrl = `/proxy/${targetUrl}`;
+    const res = await fetch(proxyUrl, { method: "POST", headers: safeHeaders, body });
+    return await parseResponse(res);
 }
 
 async function maybeFinalizeUrl(url, prompt, negative, settings) {

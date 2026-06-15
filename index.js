@@ -15804,6 +15804,7 @@ async function uploadToImageHost(url, settings) {
             throw new Error(`Image hosting upload failed (${res.status}): ${text.substring(0, 300)}`);
         }
         const text = await res.text();
+        console.log("[QIG] Image hosting response (first 500 chars):", text.substring(0, 500));
         const json = (() => { try { return JSON.parse(text); } catch { return null; } })();
         const resultUrl = provider.extractUrl(json || text, s);
         if (!resultUrl) throw new Error("Image hosting returned no URL");

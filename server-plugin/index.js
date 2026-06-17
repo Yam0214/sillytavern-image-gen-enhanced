@@ -101,15 +101,15 @@ async function handleImageHostingUpload(req, res) {
                 extractUrl(json) { return json?.media?.urls?.original; },
                 authHeader: () => `Bearer ${apiKey}`,
             },
-            imgbb: {
-                endpoint: "https://api.imgbb.com/1/upload",
+            imgos: {
+                endpoint: "https://imgos.cn/api/upload",
                 buildBody(buf) {
                     const fd = new FormData();
-                    fd.set("key", apiKey);
-                    fd.set("image", arrayBufferToBase64(buf));
+                    fd.set("file", new Blob([buf]), filename);
                     return fd;
                 },
-                extractUrl(json) { return json?.data?.url; },
+                extractUrl(json) { return json?.data?.url || json?.data?.link || json?.url; },
+                authHeader: () => `Bearer ${apiKey}`,
             },
             imgur: {
                 endpoint: "https://api.imgur.com/3/upload",
@@ -131,6 +131,15 @@ async function handleImageHostingUpload(req, res) {
                     return fd;
                 },
                 extractUrl(text) { return text.trim(); },
+            },
+            lugu: {
+                endpoint: "https://imgse.com/ajax/plug/upload",
+                buildBody(buf) {
+                    const fd = new FormData();
+                    fd.set("file", new Blob([buf]), filename);
+                    return fd;
+                },
+                extractUrl(json) { return json?.data?.url || json?.url; },
             },
             custom: {
                 endpoint: customEndpoint,

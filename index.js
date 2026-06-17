@@ -12645,25 +12645,27 @@ function createUI() {
                             <label>Provider</label>
                             <select id="qig-image-hosting-provider">
                                 <option value="imgpile" ${s.imageHostingProvider === "imgpile" ? "selected" : ""}>imgpile ⭐ (NSFW + CORS)</option>
-                                <option value="imgur" ${s.imageHostingProvider === "imgur" ? "selected" : ""}>Imgur (CORS)</option>
-                                <option value="imgbb" ${s.imageHostingProvider === "imgbb" ? "selected" : ""}>imgbb (CORS)</option>
-                                <option value="catbox" ${s.imageHostingProvider === "catbox" ? "selected" : ""}>Catbox (no key)</option>
+                                <option value="imgos" ${s.imageHostingProvider === "imgos" ? "selected" : ""}>Imgos 🇨🇳 (国内CORS)</option>
+                                <option value="imgur" ${s.imageHostingProvider === "imgur" ? "selected" : ""}>Imgur (经典CORS)</option>
+                                <option value="catbox" ${s.imageHostingProvider === "catbox" ? "selected" : ""}>Catbox (NSFW, no key)</option>
+                                <option value="lugu" ${s.imageHostingProvider === "lugu" ? "selected" : ""}>路过图床 🇨🇳 (国内经典)</option>
                                 <option value="custom" ${s.imageHostingProvider === "custom" ? "selected" : ""}>Custom</option>
                             </select>
                             <small id="qig-hosting-provider-hint">${(() => {
                                 const hints = {
-                                    imgpile: "✅ NSFW + CORS直连. Needs free Bearer token from imgpile.com. 100MB/file.",
-                                    imgur: "✅ CORS直连. ⚠️ No NSFW. Needs Client-ID from api.imgur.com. 10MB/file.",
-                                    imgbb: "✅ CORS直连. ⚠️ No NSFW. Needs free API key from api.imgbb.com. 32MB/file.",
-                                    catbox: "✅ NSFW, no key. ❌ No CORS — needs server-plugin or proxy. 200MB/file.",
+                                    imgpile: "✅ NSFW + CORS直连. Needs Bearer token (free) from imgpile.com. 100MB/file. 海外CDN.",
+                                    imgos: "✅ 国内CORS直连. Needs token (free) from imgos.cn. 国内CDN加速. ⚠️ 2026新站.",
+                                    imgur: "✅ CORS直连. 14年老牌. ⚠️ No NSFW. Needs Client-ID from api.imgur.com. 20MB/file. 匿名图6月无浏览可删.",
+                                    catbox: "✅ NSFW, 免Key, 200MB/file, 永久保存. ❌ No CORS — needs server-plugin. 海外单IP运营.",
+                                    lugu: "🇨🇳 国内15年经典. ✅ 免注册. ❌ No CORS — needs server-plugin. 10MB/file. 游客24h过期, 注册永久.",
                                     custom: "Custom endpoint. Must accept the configured body format.",
                                 };
                                 return hints[s.imageHostingProvider] || hints.imgpile;
                             })()}</small>
                         </div>
-                        <div class="qig-field" id="qig-image-hosting-key-field" style="display:${["imgpile","imgur","imgbb"].includes(s.imageHostingProvider) ? "block" : "none"};">
+                        <div class="qig-field" id="qig-image-hosting-key-field" style="display:${["imgpile","imgos","imgur"].includes(s.imageHostingProvider) ? "block" : "none"};">
                             <label>API Key ${(() => { const p = IMAGE_HOSTING_PROVIDERS?.[s.imageHostingProvider]; return p?.keyOptional ? '<small>(optional)</small>' : ''; })()}</label>
-                            <input id="qig-image-hosting-key" type="password" value="${esc(s.imageHostingApiKey)}" placeholder="${{imgpile:"Bearer token from imgpile.com",imgur:"Client-ID from api.imgur.com",imgbb:"API key from api.imgbb.com"}[s.imageHostingProvider]||"Enter API token"}" autocomplete="off">
+                            <input id="qig-image-hosting-key" type="password" value="${esc(s.imageHostingApiKey)}" placeholder="${{imgpile:"Bearer token from imgpile.com",imgos:"Token from imgos.cn",imgur:"Client-ID from api.imgur.com"}[s.imageHostingProvider]||"Enter API token"}" autocomplete="off">
                         </div>
                     </div>
                     <div id="qig-image-hosting-custom" style="display:${s.imageHostingProvider === "custom" ? "block" : "none"};">
@@ -13535,15 +13537,16 @@ function createUI() {
         if (imageHostingCustomEl) imageHostingCustomEl.style.display = provider === "custom" ? "block" : "none";
         // Show API Key field only for providers that need it
         const keyField = document.getElementById("qig-image-hosting-key-field");
-        if (keyField) keyField.style.display = ["imgpile", "imgur", "imgbb"].includes(provider) ? "block" : "none";
+        if (keyField) keyField.style.display = ["imgpile", "imgos", "imgur"].includes(provider) ? "block" : "none";
         // Update provider hint
         const hintEl = document.getElementById("qig-hosting-provider-hint");
         if (hintEl) {
             const hints = {
-                imgpile: "✅ NSFW + CORS直连. Needs free Bearer token from imgpile.com. 100MB/file.",
-                imgur: "✅ CORS直连. ⚠️ No NSFW. Needs Client-ID from api.imgur.com. 10MB/file.",
-                imgbb: "✅ CORS直连. ⚠️ No NSFW. Needs free API key from api.imgbb.com. 32MB/file.",
-                catbox: "✅ NSFW, no key. ❌ No CORS — needs server-plugin or proxy. 200MB/file.",
+                imgpile: "✅ NSFW + CORS直连. Needs Bearer token (free) from imgpile.com. 100MB/file. 海外CDN.",
+                imgos: "✅ 国内CORS直连. Needs token (free) from imgos.cn. 国内CDN加速. ⚠️ 2026新站.",
+                imgur: "✅ CORS直连. 14年老牌. ⚠️ No NSFW. Needs Client-ID from api.imgur.com. 20MB/file. 匿名图6月无浏览可删.",
+                catbox: "✅ NSFW, 免Key, 200MB/file, 永久保存. ❌ No CORS — needs server-plugin. 海外单IP运营.",
+                lugu: "🇨🇳 国内15年经典. ✅ 免注册. ❌ No CORS — needs server-plugin. 10MB/file. 游客24h过期, 注册永久.",
                 custom: "Custom endpoint. Must accept the configured body format.",
             };
             hintEl.textContent = hints[provider] || hints.imgpile;
@@ -15664,24 +15667,22 @@ const IMAGE_HOSTING_PROVIDERS = {
             return json?.media?.urls?.original || null;
         },
     },
-    imgbb: {
-        name: "imgbb",
+    imgos: {
+        name: "Imgos 🇨🇳 (国内CORS)",
         needsKey: true,
-        endpoint: "https://api.imgbb.com/1/upload",
-        bodyType: "urlencoded",
-        async buildForm(buffer, _filename, apiKey, _settings) {
-            const base64 = arrayBufferToBase64(buffer);
-            const params = new URLSearchParams();
-            params.append("key", apiKey || "");
-            params.append("image", base64);
+        endpoint: "https://imgos.cn/api/upload",
+        async buildForm(buffer, filename, apiKey, _settings) {
+            const blob = new Blob([buffer]);
+            const form = new FormData();
+            form.append("file", blob, filename);
             return {
-                url: "https://api.imgbb.com/1/upload",
-                headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                body: params,
+                url: "https://imgos.cn/api/upload",
+                headers: { Authorization: `Bearer ${apiKey || ""}` },
+                body: form,
             };
         },
         extractUrl(json) {
-            return json?.data?.url || null;
+            return json?.data?.url || json?.data?.link || json?.url || null;
         },
     },
     imgur: {
@@ -15704,7 +15705,7 @@ const IMAGE_HOSTING_PROVIDERS = {
         },
     },
     catbox: {
-        name: "Catbox (no key)",
+        name: "Catbox (NSFW, no key)",
         needsKey: false,
         endpoint: "https://catbox.moe/user/api.php",
         async buildForm(buffer, filename, _apiKey, _settings) {
@@ -15724,6 +15725,24 @@ const IMAGE_HOSTING_PROVIDERS = {
                 return url.startsWith("https://") ? url : null;
             }
             return null;
+        },
+    },
+    lugu: {
+        name: "路过图床 🇨🇳 (国内经典)",
+        needsKey: false,
+        endpoint: "https://imgse.com/ajax/plug/upload",
+        async buildForm(buffer, filename, _apiKey, _settings) {
+            const blob = new Blob([buffer]);
+            const form = new FormData();
+            form.append("file", blob, filename);
+            return {
+                url: "https://imgse.com/ajax/plug/upload",
+                headers: {},
+                body: form,
+            };
+        },
+        extractUrl(json) {
+            return json?.data?.url || json?.url || null;
         },
     },
     custom: {

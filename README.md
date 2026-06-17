@@ -339,7 +339,7 @@ Active preset is highlighted in the preset chip UI.
 
 SillyTavern's built-in CORS proxy is blocked by `basicAuthMode` when a provider request also needs its own `Authorization` header. This affects CivitAI and Replicate in browser-only mode.
 
-The optional `server-plugin/` directory relays only the CivitAI consumer-jobs endpoint and Replicate predictions endpoints used by this extension.
+The optional `server-plugin/` directory relays CivitAI consumer-jobs endpoint, Replicate predictions endpoints, and image hosting uploads for CORS-blocked providers (Catbox, 路过图床).
 
 Setup:
 
@@ -362,49 +362,60 @@ SillyTavern server plugins are not sandboxed. Only install server plugins from d
 
 ## 归档分支
 
-### `feature/image-hosting` — 图床上传功能（已归档）
+### `feature/image-hosting` — 图床上传功能
 
-实现自定义图床上传，将生成的图片上传至外部图床服务并使用图床 URL 插入对话。
+将生成的图片上传至外部图床，使用图床 URL 插入对话，实现跨设备图片访问。
 
-**状态：已归档，不再开发。** 根本原因是 CORS 限制导致大部分图床服务无法从浏览器端直接上传。
+**状态：开发中。** 分支 `feature/image-hosting`。
 
-#### 功能实现
+#### 为什么需要图床？
 
-- 支持 5 个图床 provider：FreeImage.host、imgbb、Catbox、Telegra.ph、SM.MS
-- 支持自定义图床（Custom endpoint + URL field path）
-- 免 Key 图床：Catbox（匿名上传）
-- 设置面板 UI：provider 下拉、API Key、自定义字段、provider 兼容性/NSFW 提示
-- 画廊 ☁ 标记标识图床图片
-- UI 联动：图床启用时灰掉 saveToServer
+`saveToServer + image_url` 模式下，生成的图片保存在 ST 服务器本地，URL 为 `http://服务器IP:8000/user_data/xxx.png`。换设备后 IP 变化 → 图片 404。画廊存在浏览器 `localStorage`，也不跨设备。图床上传解决这两个问题。
+
+#### 支持的图床
+
+按梯度分为「最方便」和「最稳定」两档：
+
+| 梯度 | 图床 | Provider ID | CORS | NSFW | 需要Key | 免改ST | 核心优势 | 核心风险 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **最方便** | **imgpile** ⭐ | `imgpile` | ✅ | ✅ | Bearer token（免费注册） | ✅ | CORS+NSFW+100MB | OpenAI审核可能误判AI生成图 |
+| **最方便** | **Imgos** 🇨🇳 | `imgos` | ✅ | ⚠️ 不明 | token（免费注册） | ✅ | 国内CDN+CORS+免费 | 2026新站，无长期运营记录 |
+| **最稳定** | **Imgur** | `imgur` | ✅ | ❌ | Client-ID（免费注册） | ✅ | 14年老牌，双通道 | 匿名图6月无浏览可删+禁NSFW |
+| **最稳定** | **Catbox** | `catbox` | ❌ | ✅ | 无需 | ❌ 需server-plugin | 免Key+NSFW+200MB+永久 | 单人运营，无CORS |
+| **最稳定** | **路过图床** 🇨🇳 | `lugu` | ❌ | ❌ | 免注册可用 | ❌ 需server-plugin | 15年老牌，国内最经典 | 无正式API，域名常换 |
+| — | **Custom** | `custom` | 视配置 | 视配置 | 视配置 | 视配置 | 自定义端点 | — |
+
+**说明：**
+- **最方便**：CORS 直连，即插即用，无需改动 ST 配置。适合云酒馆用户。
+- **最稳定**：允许依赖 server-plugin 中转，服务运营时间久。适合自建用户。
+- 🇨🇳 标记的图床使用国内 CDN，从中国大陆访问更快。
+
+#### 设置
+
+1. 在 Output 设置区，勾选 `Upload to image host ☁`
+2. 选择 Provider
+3. 需要 Key 的 provider 填入 API Key
+4. 推荐 output mode 选 `image_url`
 
 #### CORS 测试结果（2026-06）
 
-对主流免费图床进行了 `curl -I` 和 `curl -X OPTIONS` CORS 头测试：
-
-| Provider | CORS 支持 | `access-control-allow-origin` | OPTIONS preflight | 客户端直连 | NSFW |
-| --- | --- | --- | --- | --- | --- |
-| **imgbb** | ✅ | `*` | ✅ | ✅ | ❌ ToS 禁止 |
-| **FreeImage.host** | ❌ | 无 | 无 | ❌ | ✅ |
-| **Catbox** | ❌ | 无 | 无 | ❌ | ✅ |
-| **Telegra.ph** | ❌ | 无 | 无 | ❌ | ⚠️ 不明确 |
-| **SM.MS** | ❌ | 无 | 无 | ❌ | ❌ 中国服务审核 |
-| **tmpfiles.org** | ✅ | `*` | ✅ | ✅ | ❓ 临时文件 |
-
-#### 结论
-
-**免费 + 免 Key + CORS 支持 + NSFW 友好的图床服务不存在。**
-
-- imgbb 是唯一支持 CORS 的持久化图床，但 ToS 禁止 NSFW，且需要 API Key
-- NSFW 友好的图床（Catbox、FreeImage）均不支持 CORS，浏览器端无法直接上传
-- SillyTavern 的 `/proxy/` 端点无法正确转发 POST body（urlencoded 和 multipart 均返回目标站点首页）
-- 公共 CORS 代理（corsproxy.io、allorigins.win）对 POST 请求不稳定（403/413/522）
-
-**可行方案需要 server-plugin 中转**（服务端上传），但这对云酒馆用户不可行（无法要求管理员安装插件并重启服务）。
+| Provider | CORS 支持 | `access-control-allow-origin` | 客户端直连 | NSFW |
+| --- | --- | --- | --- | --- |
+| **imgpile** | ✅ | 反射 origin | ✅ | ✅ |
+| **Imgos** | ✅ | 未详细测试 | ✅ | ⚠️ |
+| **Imgur** | ✅ | `*` | ✅ | ❌ |
+| **Catbox** | ❌ | 无 | ❌ | ✅ |
+| **路过图床** | ❌ | 无 | ❌ | ❌ |
+| **imgbb** | ✅ | `*` | ✅ | ❌ ToS禁止 |
+| **SM.MS/S.EE** | ✅ | `*` | ✅ | ❌ 已转付费$5.99/月起 |
+| **FreeImage.host** | ❌ | 无 | ❌ | ✅ |
+| **Telegra.ph** | ❌ | 无 | ❌ | ⚠️ |
 
 #### 技术发现
 
 - ST 的 `getRequestHeaders()` 返回 `Content-Type: application/json`，会覆盖 urlencoded 的 Content-Type
 - ST 的 `/proxy/` 端点虽然返回 200 OK，但响应体是目标网站的 HTML 首页，说明 POST body 未被正确转发
+- 公共 CORS 代理（corsproxy.io、allorigins.win）对 POST 请求不稳定（403/413/522）
 - ST server-plugin 在启动时加载，运行中不支持热更新
 
 ## 修改记录

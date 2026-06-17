@@ -998,6 +998,7 @@ async function callDirectMainChatRawRequest(instruction, {
         ...extractLLMResponseDetails(response),
         route: "main_chat_ai",
         requestMethod: "directChatCompletions",
+        _rawResponse: response,
     };
 }
 
@@ -1024,6 +1025,7 @@ async function callInternalStandaloneLLM(instruction, {
                 return meta;
             }
             logLLMHelperResponseMeta(meta, `${requestLabel}: direct backend response`);
+            logLLMResponseError(meta, meta?._rawResponse, `${requestLabel}: direct backend empty response`);
             log(`${requestLabel}: direct backend returned no text, using quiet prompt fallback`);
         } catch (e) {
             if (e.name === "AbortError") throw e;
@@ -1050,6 +1052,7 @@ async function callInternalStandaloneLLM(instruction, {
                     return returnMeta ? meta : details.text;
                 }
                 logLLMHelperResponseMeta(meta, `${requestLabel}: generateRawData response`);
+                logLLMResponseError(meta, response, `${requestLabel}: generateRawData empty response`);
                 const directMeta = await maybeCallDirectMainChatRawRequest();
                 if (directMeta?.text) {
                     return returnMeta ? directMeta : directMeta.text;
@@ -4543,6 +4546,8 @@ function extractLLMResponseDetails(response) {
 
     const finishReason = response?.choices?.[0]?.finish_reason ?? response?.finish_reason ?? response?.response?.finish_reason ?? null;
     const responseShape = summarizeLLMValueShape(response);
+    const responseError = response?.error ?? response?.choices?.[0]?.error ?? null;
+    const usage = response?.usage ?? null;
     if (!response || typeof response !== "object") {
         return {
             text: "",
@@ -4551,6 +4556,8 @@ function extractLLMResponseDetails(response) {
             finishReason,
             responseShape,
             contentShape: "",
+            responseError,
+            usage,
         };
     }
 
@@ -4604,6 +4611,8 @@ function extractLLMResponseDetails(response) {
                 finishReason,
                 responseShape,
                 contentShape: summarizeLLMValueShape(candidate.value),
+                responseError,
+                usage,
             };
         }
     }
@@ -4617,6 +4626,8 @@ function extractLLMResponseDetails(response) {
         finishReason,
         responseShape,
         contentShape: firstCandidateShape,
+        responseError,
+        usage,
     };
 }
 
@@ -4643,13 +4654,47 @@ function logLLMHelperResponseMeta(meta, label = "LLM helper") {
     if (meta.finishReason) parts.push(`finish_reason=${meta.finishReason}`);
     if (Number.isFinite(meta.requestedMaxTokens)) parts.push(`max_tokens=${meta.requestedMaxTokens}`);
     if (meta.responseShape) parts.push(`shape=${meta.responseShape}`);
+    if (meta.responseError) {
+        const err = typeof meta.responseError === "string" ? meta.responseError : JSON.stringify(meta.responseError);
+        parts.push(`error=${err}`);
+    }
+    if (meta.usage) {
+        const usageStr = typeof meta.usage === "string" ? meta.usage : JSON.stringify(meta.usage);
+        parts.push(`usage=${usageStr}`);
+    }
     log(`${label}: ${parts.join(", ")}`);
+}
+
+function logLLMResponseError(meta, response, label = "LLM response error") {
+    if (!meta || typeof meta !== "object") return;
+    const parts = [`route=${getLLMHelperRouteDescription(meta.route)}`];
+    if (meta.extractionStatus) parts.push(`extraction=${meta.extractionStatus}`);
+    if (meta.finishReason) parts.push(`finish_reason=${meta.finishReason}`);
+    if (meta.responseError) {
+        const err = typeof meta.responseError === "string" ? meta.responseError : JSON.stringify(meta.responseError);
+        parts.push(`error=${err}`);
+    }
+    if (meta.usage) {
+        const usageStr = typeof meta.usage === "string" ? meta.usage : JSON.stringify(meta.usage);
+        parts.push(`usage=${usageStr}`);
+    }
+    // Dump raw response keys for debugging non-standard formats
+    if (response && typeof response === "object") {
+        const keys = Object.keys(response).slice(0, 10);
+        parts.push(`raw_keys=[${keys.join(",")}]`);
+    }
+    console.warn(`[QIG] ${label}: ${parts.join(", ")}`);
 }
 
 function buildLLMEmptyPromptWarning(meta, rawText, cleanedText) {
     const routeLabel = getLLMHelperRouteDescription(meta?.route);
     if (meta?.finishReason === "length") {
         return `${routeLabel} hit finish_reason=length — using raw prompt. Consider raising max tokens.`;
+    }
+
+    if (meta?.responseError) {
+        const err = typeof meta.responseError === "string" ? meta.responseError : JSON.stringify(meta.responseError);
+        return `${routeLabel} returned error: ${err} — using raw prompt.`;
     }
 
     switch (meta?.extractionStatus) {
@@ -4772,6 +4817,7 @@ async function callOverrideLLM(instruction, systemPrompt = "", signal = null, { 
         };
         if (!details.text) {
             logLLMHelperResponseMeta(meta, "LLM Override response");
+            logLLMResponseError(meta, response, "LLM Override empty response");
         }
         return returnMeta ? meta : details.text;
     } catch (e) {
@@ -5351,6 +5397,7 @@ Tags:`;
             const warningMessage = buildLLMEmptyPromptWarning(helperResponseMeta, llmPrompt, cleaned);
             log(`WARNING: ${warningMessage}`);
             logLLMHelperResponseMeta(helperResponseMeta, "LLM helper empty response");
+            logLLMResponseError(helperResponseMeta, helperResponseMeta?._rawResponse, "LLM prompt generation empty response");
             toastr.warning(warningMessage, "Image Gen", { timeOut: 5000 });
             return basePrompt;
         }

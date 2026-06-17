@@ -81,6 +81,139 @@ async function handleCivitai(req, res) {
     }
 }
 
+async function handleImageHostingUpload(req, res) {
+    try {
+        const providerId = requireString(req.body?.provider, "provider");
+        const imageBase64 = requireString(req.body?.imageBase64, "imageBase64");
+        const filename = requireString(req.body?.filename, "filename");
+        const apiKey = req.body?.apiKey || "";
+        const customEndpoint = req.body?.customEndpoint || "";
+        const customUrlField = req.body?.customUrlField || "";
+
+        const providers = {
+            imgpile: {
+                endpoint: "https://cdn.imgpile.com/api/v1/media",
+                buildBody(buf) {
+                    const fd = new FormData();
+                    fd.set("file", new Blob([buf]), filename);
+                    return fd;
+                },
+                extractUrl(json) { return json?.media?.urls?.original; },
+                authHeader: () => `Bearer ${apiKey}`,
+            },
+            imgos: {
+                endpoint: "https://imgos.cn/api/upload",
+                buildBody(buf) {
+                    const fd = new FormData();
+                    fd.set("file", new Blob([buf]), filename);
+                    return fd;
+                },
+                extractUrl(json) { return json?.data?.url || json?.data?.link || json?.url; },
+                authHeader: () => `Bearer ${apiKey}`,
+            },
+            imgur: {
+                endpoint: "https://api.imgur.com/3/upload",
+                buildBody(buf) {
+                    const fd = new FormData();
+                    fd.set("image", new Blob([buf]), filename);
+                    fd.set("type", "file");
+                    return fd;
+                },
+                extractUrl(json) { return json?.data?.link; },
+                authHeader: () => `Client-ID ${apiKey}`,
+            },
+            catbox: {
+                endpoint: "https://catbox.moe/user/api.php",
+                buildBody(buf) {
+                    const fd = new FormData();
+                    fd.set("reqtype", "fileupload");
+                    fd.set("fileToUpload", new Blob([buf]), filename);
+                    return fd;
+                },
+                extractUrl(text) { return text.trim(); },
+            },
+            lugu: {
+                endpoint: "https://imgse.com/ajax/plug/upload",
+                buildBody(buf) {
+                    const fd = new FormData();
+                    fd.set("file", new Blob([buf]), filename);
+                    return fd;
+                },
+                extractUrl(json) { return json?.data?.url || json?.url; },
+            },
+            custom: {
+                endpoint: customEndpoint,
+                buildBody(buf) {
+                    const fd = new FormData();
+                    fd.set("file", new Blob([buf]), filename);
+                    return fd;
+                },
+                extractUrl(json) {
+                    const path = customUrlField || "data.url";
+                    return path.split(".").reduce((o, k) => o?.[k], json);
+                },
+            },
+        };
+
+        const provider = providers[providerId];
+        if (!provider) {
+            sendJson(res, 400, { error: `Unknown image hosting provider: ${providerId}` });
+            return;
+        }
+
+        // Convert base64 to buffer
+        const binaryStr = atob(imageBase64);
+        const buf = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) buf[i] = binaryStr.charCodeAt(i);
+
+        const body = provider.buildBody(buf);
+        const headers = {};
+        if (apiKey && provider.authHeader) {
+            headers["Authorization"] = provider.authHeader();
+        }
+
+        const timeout = withTimeout();
+        try {
+            const upstream = await fetch(provider.endpoint, {
+                method: "POST",
+                headers,
+                body,
+                signal: timeout.signal,
+            });
+
+            const responseText = await upstream.text();
+            if (!upstream.ok) {
+                sendJson(res, upstream.status, { error: `Upload failed (${upstream.status}): ${responseText.substring(0, 300)}` });
+                return;
+            }
+
+            let imageUrl;
+            try {
+                imageUrl = provider.extractUrl(JSON.parse(responseText));
+            } catch {
+                imageUrl = provider.extractUrl(responseText);
+            }
+
+            if (!imageUrl) {
+                sendJson(res, 502, { error: "Failed to extract image URL from hosting response" });
+                return;
+            }
+
+            sendJson(res, 200, { url: imageUrl });
+        } finally {
+            timeout.done();
+        }
+    } catch (error) {
+        sendJson(res, error.status || 500, { error: error.message || "Image hosting upload failed" });
+    }
+}
+
+function arrayBufferToBase64(buf) {
+    let binary = "";
+    for (let i = 0; i < buf.length; i++) binary += String.fromCharCode(buf[i]);
+    return btoa(binary);
+}
+
 async function handleReplicate(req, res) {
     try {
         const action = requireString(req.body?.action, "action");
@@ -113,6 +246,7 @@ async function init(router) {
     router.get("/healthz", (_req, res) => res.sendStatus(204));
     router.post("/civitai", handleCivitai);
     router.post("/replicate", handleReplicate);
+    router.post("/image-hosting/upload", handleImageHostingUpload);
     console.log("Quick Image Gen relay plugin loaded");
 }
 

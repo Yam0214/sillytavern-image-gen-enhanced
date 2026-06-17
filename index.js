@@ -362,6 +362,12 @@ const defaultSettings = {
     insertAsHiddenReply: false,
     saveToServer: false,
     saveToServerEmbedMetadata: true,
+    // Image Hosting
+    imageHostingEnabled: false,
+    imageHostingProvider: "imgpile",
+    imageHostingApiKey: "",
+    imageHostingCustomEndpoint: "",
+    imageHostingCustomUrlField: "data.url",
     disablePaletteButton: false,
     paletteMode: "direct",
     confirmBeforeGenerate: false,
@@ -998,7 +1004,6 @@ async function callDirectMainChatRawRequest(instruction, {
         ...extractLLMResponseDetails(response),
         route: "main_chat_ai",
         requestMethod: "directChatCompletions",
-        _rawResponse: response,
     };
 }
 
@@ -1025,7 +1030,6 @@ async function callInternalStandaloneLLM(instruction, {
                 return meta;
             }
             logLLMHelperResponseMeta(meta, `${requestLabel}: direct backend response`);
-            logLLMResponseError(meta, meta?._rawResponse, `${requestLabel}: direct backend empty response`);
             log(`${requestLabel}: direct backend returned no text, using quiet prompt fallback`);
         } catch (e) {
             if (e.name === "AbortError") throw e;
@@ -1052,7 +1056,7 @@ async function callInternalStandaloneLLM(instruction, {
                     return returnMeta ? meta : details.text;
                 }
                 logLLMHelperResponseMeta(meta, `${requestLabel}: generateRawData response`);
-                logLLMResponseError(meta, response, `${requestLabel}: generateRawData empty response`);
+                logLLMResponseError(meta, `${requestLabel}: generateRawData empty response`);
                 const directMeta = await maybeCallDirectMainChatRawRequest();
                 if (directMeta?.text) {
                     return returnMeta ? directMeta : directMeta.text;
@@ -2326,9 +2330,8 @@ async function corsFetch(url, opts = {}) {
     if (_corsProxyState === -2 && requestHasOwnAuthorization) {
         throw new CorsProxyBasicAuthError(url);
     }
-    if (_corsProxyState === -1) {
-        throw new TypeError(`Cannot reach ${url} (CORS). Enable enableCorsProxy in SillyTavern config.yaml or launch A1111 with --cors-allow-origins=*`);
-    }
+    // Note: _corsProxyState === -1 no longer short-circuits — retry the proxy
+    // in case the user enabled enableCorsProxy since the last failed attempt.
     const proxyUrl = `/proxy/${url}`;
     // Merge ST request headers (CSRF token) into proxy requests
     const stHeaders = typeof getRequestHeaders === 'function' ? getRequestHeaders() : {};
@@ -4547,7 +4550,6 @@ function extractLLMResponseDetails(response) {
     const finishReason = response?.choices?.[0]?.finish_reason ?? response?.finish_reason ?? response?.response?.finish_reason ?? null;
     const responseShape = summarizeLLMValueShape(response);
     const responseError = response?.error ?? response?.choices?.[0]?.error ?? null;
-    const usage = response?.usage ?? null;
     if (!response || typeof response !== "object") {
         return {
             text: "",
@@ -4557,7 +4559,6 @@ function extractLLMResponseDetails(response) {
             responseShape,
             contentShape: "",
             responseError,
-            usage,
         };
     }
 
@@ -4612,7 +4613,6 @@ function extractLLMResponseDetails(response) {
                 responseShape,
                 contentShape: summarizeLLMValueShape(candidate.value),
                 responseError,
-                usage,
             };
         }
     }
@@ -4627,7 +4627,6 @@ function extractLLMResponseDetails(response) {
         responseShape,
         contentShape: firstCandidateShape,
         responseError,
-        usage,
     };
 }
 
@@ -4654,36 +4653,18 @@ function logLLMHelperResponseMeta(meta, label = "LLM helper") {
     if (meta.finishReason) parts.push(`finish_reason=${meta.finishReason}`);
     if (Number.isFinite(meta.requestedMaxTokens)) parts.push(`max_tokens=${meta.requestedMaxTokens}`);
     if (meta.responseShape) parts.push(`shape=${meta.responseShape}`);
-    if (meta.responseError) {
-        const err = typeof meta.responseError === "string" ? meta.responseError : JSON.stringify(meta.responseError);
-        parts.push(`error=${err}`);
-    }
-    if (meta.usage) {
-        const usageStr = typeof meta.usage === "string" ? meta.usage : JSON.stringify(meta.usage);
-        parts.push(`usage=${usageStr}`);
-    }
     log(`${label}: ${parts.join(", ")}`);
 }
 
-function logLLMResponseError(meta, response, label = "LLM response error") {
+function logLLMResponseError(meta, label = "LLM error") {
     if (!meta || typeof meta !== "object") return;
-    const parts = [`route=${getLLMHelperRouteDescription(meta.route)}`];
-    if (meta.extractionStatus) parts.push(`extraction=${meta.extractionStatus}`);
-    if (meta.finishReason) parts.push(`finish_reason=${meta.finishReason}`);
-    if (meta.responseError) {
-        const err = typeof meta.responseError === "string" ? meta.responseError : JSON.stringify(meta.responseError);
-        parts.push(`error=${err}`);
-    }
-    if (meta.usage) {
-        const usageStr = typeof meta.usage === "string" ? meta.usage : JSON.stringify(meta.usage);
-        parts.push(`usage=${usageStr}`);
-    }
-    // Dump raw response keys for debugging non-standard formats
-    if (response && typeof response === "object") {
-        const keys = Object.keys(response).slice(0, 10);
-        parts.push(`raw_keys=[${keys.join(",")}]`);
-    }
-    console.warn(`[QIG] ${label}: ${parts.join(", ")}`);
+    const route = getLLMHelperRouteDescription(meta.route);
+    const reason = meta.responseError
+        ? (typeof meta.responseError === "string" ? meta.responseError : JSON.stringify(meta.responseError))
+        : meta.finishReason === "length"
+            ? "truncated (finish_reason=length)"
+            : "empty response";
+    console.error(`[QIG] ${label}: ${route} — ${reason}`);
 }
 
 function buildLLMEmptyPromptWarning(meta, rawText, cleanedText) {
@@ -4817,7 +4798,7 @@ async function callOverrideLLM(instruction, systemPrompt = "", signal = null, { 
         };
         if (!details.text) {
             logLLMHelperResponseMeta(meta, "LLM Override response");
-            logLLMResponseError(meta, response, "LLM Override empty response");
+            logLLMResponseError(meta, "LLM Override empty response");
         }
         return returnMeta ? meta : details.text;
     } catch (e) {
@@ -5397,7 +5378,7 @@ Tags:`;
             const warningMessage = buildLLMEmptyPromptWarning(helperResponseMeta, llmPrompt, cleaned);
             log(`WARNING: ${warningMessage}`);
             logLLMHelperResponseMeta(helperResponseMeta, "LLM helper empty response");
-            logLLMResponseError(helperResponseMeta, helperResponseMeta?._rawResponse, "LLM prompt generation empty response");
+            logLLMResponseError(helperResponseMeta, "LLM prompt generation empty response");
             toastr.warning(warningMessage, "Image Gen", { timeOut: 5000 });
             return basePrompt;
         }
@@ -7612,14 +7593,17 @@ async function finalizeGeneratedEntry(rawUrl, prompt, negative, settings, option
     const metadataSettings = getMetadataSettings(settings, { resolvedSeed });
     const finalUrl = await maybeFinalizeUrl(rawUrl, prompt, negative, metadataSettings);
     if (!finalUrl) return null;
-    const stableUrl = metadataSettings.saveToServer ? finalUrl : await persistImageUrl(finalUrl);
+    // When saveToServer or imageHosting is active, the URL is already persistent — skip persistImageUrl
+    const stableUrl = (metadataSettings.saveToServer || metadataSettings.imageHostingEnabled) ? finalUrl : await persistImageUrl(finalUrl);
     return createGenerationEntry(stableUrl, prompt, negative, metadataSettings, { ...options, sourceUrl: finalUrl });
 }
 
 async function addToGallery(entryOrUrl) {
     const entry = normalizeGenerationEntry(entryOrUrl);
     if (!entry.url) return null;
-    const persistentUrl = await persistImageUrl(entry.url);
+    // Image-hosted URLs are persistent — skip data URL conversion
+    const isImageHosted = entry.metadataSettings?.imageHostingEnabled && isHttpUrl(entry.url);
+    const persistentUrl = isImageHosted ? entry.url : await persistImageUrl(entry.url);
     const thumbnail = await createThumbnail(persistentUrl);
     const savedEntry = { ...entry, url: persistentUrl, thumbnail, date: entry.date ?? Date.now() };
     sessionGallery.unshift(savedEntry);
@@ -8144,8 +8128,11 @@ function showGallery() {
                 const imgSrc = escapeHtml(item.thumbnail || item.url || "");
                 const snippet = item.prompt ? item.prompt.substring(0, 40) + (item.prompt.length > 40 ? '...' : '') : '';
                 const safeSnippet = escapeHtml(snippet);
+                const isHosted = isHttpUrl(item.url) && !isSameOriginImageUrl(item.url);
+                const hostedBadge = isHosted ? `<div style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.7);color:#4fc3f7;font-size:10px;padding:1px 4px;border-radius:3px;" title="Hosted: ${escapeHtml(item.url)}">☁</div>` : '';
                 return `<div style="position:relative;cursor:pointer;" data-gallery-index="${index}">` +
                     `<img src="${imgSrc}" style="width:100%;border-radius:6px;" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22><text y=%2240%22 x=%2220%22 fill=%22gray%22>expired</text></svg>'">` +
+                    hostedBadge +
                     (snippet ? `<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.7);color:#ccc;font-size:9px;padding:2px 4px;border-radius:0 0 6px 6px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">${safeSnippet}</div>` : '') +
                     `</div>`;
             }).join('') : '<p style="color:#888;">No images yet</p>';
@@ -12667,14 +12654,65 @@ function createUI() {
                     <input id="qig-auto-insert" type="checkbox" ${s.autoInsert ? "checked" : ""}>
                     <span>Auto-insert into chat (skip popup)</span>
                 </label>
-                <div class="qig-control-grid">
+                <label class="checkbox_label" style="margin-left:16px;opacity:${s.autoInsert ? "1" : "0.6"};">
+                    <input id="qig-insert-hidden-reply" type="checkbox" ${s.insertAsHiddenReply ? "checked" : ""} ${s.autoInsert ? "" : "disabled"}>
+                    <span>Send as hidden reply (prevents payload errors)</span>
+                </label>
+                <label class="checkbox_label" style="margin-left:16px;margin-top:4px;">
+                    <input id="qig-image-hosting-enabled" type="checkbox" ${s.imageHostingEnabled ? "checked" : ""}>
+                    <span>Upload to image host ☁</span>
+                </label>
+                <div id="qig-image-hosting-options" style="display:${s.imageHostingEnabled ? "block" : "none"};margin-left:32px;margin-top:6px;">
+                    <div class="qig-control-grid">
+                        <div class="qig-field">
+                            <label>Provider</label>
+                            <select id="qig-image-hosting-provider">
+                                <option value="imgpile" ${s.imageHostingProvider === "imgpile" ? "selected" : ""}>imgpile ⭐ (NSFW + CORS)</option>
+                                <option value="imgos" ${s.imageHostingProvider === "imgos" ? "selected" : ""}>Imgos 🇨🇳 (国内CORS)</option>
+                                <option value="imgur" ${s.imageHostingProvider === "imgur" ? "selected" : ""}>Imgur (经典CORS)</option>
+                                <option value="catbox" ${s.imageHostingProvider === "catbox" ? "selected" : ""}>Catbox (NSFW, no key)</option>
+                                <option value="lugu" ${s.imageHostingProvider === "lugu" ? "selected" : ""}>路过图床 🇨🇳 (国内经典)</option>
+                                <option value="custom" ${s.imageHostingProvider === "custom" ? "selected" : ""}>Custom</option>
+                            </select>
+                            <small id="qig-hosting-provider-hint">${(() => {
+                                const hints = {
+                                    imgpile: "✅ NSFW + CORS直连. Needs Bearer token (free) from imgpile.com. 100MB/file. 海外CDN.",
+                                    imgos: "✅ 国内CORS直连. Needs token (free) from imgos.cn. 国内CDN加速. ⚠️ 2026新站.",
+                                    imgur: "✅ CORS直连. 14年老牌. ⚠️ No NSFW. Needs Client-ID from api.imgur.com. 20MB/file. 匿名图6月无浏览可删.",
+                                    catbox: "✅ NSFW, 免Key, 200MB/file, 永久保存. ❌ No CORS — needs server-plugin. 海外单IP运营.",
+                                    lugu: "🇨🇳 国内15年经典. ✅ 免注册. ❌ No CORS — needs server-plugin. 10MB/file. 游客24h过期, 注册永久.",
+                                    custom: "Custom endpoint. Must accept the configured body format.",
+                                };
+                                return hints[s.imageHostingProvider] || hints.imgpile;
+                            })()}</small>
+                        </div>
+                        <div class="qig-field" id="qig-image-hosting-key-field" style="display:${["imgpile","imgos","imgur"].includes(s.imageHostingProvider) ? "block" : "none"};">
+                            <label>API Key ${(() => { const p = IMAGE_HOSTING_PROVIDERS?.[s.imageHostingProvider]; return p?.keyOptional ? '<small>(optional)</small>' : ''; })()}</label>
+                            <input id="qig-image-hosting-key" type="password" value="${esc(s.imageHostingApiKey)}" placeholder="${{imgpile:"Bearer token from imgpile.com",imgos:"Token from imgos.cn",imgur:"Client-ID from api.imgur.com"}[s.imageHostingProvider]||"Enter API token"}" autocomplete="off">
+                        </div>
+                    </div>
+                    <div id="qig-image-hosting-custom" style="display:${s.imageHostingProvider === "custom" ? "block" : "none"};">
+                        <div class="qig-control-grid">
+                            <div class="qig-field">
+                                <label>Endpoint URL</label>
+                                <input id="qig-image-hosting-endpoint" type="text" value="${esc(s.imageHostingCustomEndpoint)}" placeholder="https://your-host.com/api/upload">
+                            </div>
+                            <div class="qig-field">
+                                <label>URL Response Field</label>
+                                <input id="qig-image-hosting-url-field" type="text" value="${esc(s.imageHostingCustomUrlField)}" placeholder="data.url">
+                                <small>JSON path to extract the image URL from response.</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="qig-control-grid" style="margin-top:8px;">
                     <div class="qig-field">
                         <label>Chat insert output</label>
                         <select id="qig-output-mode">
                             <option value="inline" ${normalizeOutputMode(s.outputMode) === "inline" ? "selected" : ""}>Inline data URL</option>
                             <option value="image_url" ${normalizeOutputMode(s.outputMode) === "image_url" ? "selected" : ""}>image_url (URL)</option>
                         </select>
-                        <small>Use image_url for URL-based chat media. Inline data can be saved to the ST server automatically.</small>
+                        <small>${s.imageHostingEnabled ? '☁ Image host enabled → <b>image_url</b> recommended for cross-device access.' : 'Use image_url for URL-based chat media. Inline data can be saved to the ST server automatically.'}</small>
                     </div>
                     <div class="qig-field">
                         <label>Manual insert target</label>
@@ -12686,16 +12724,12 @@ function createUI() {
                         <small>Used when inserting without a specific target message.</small>
                     </div>
                 </div>
-                <label class="checkbox_label" style="margin-left:16px;opacity:${s.autoInsert ? "1" : "0.6"};">
-                    <input id="qig-insert-hidden-reply" type="checkbox" ${s.insertAsHiddenReply ? "checked" : ""} ${s.autoInsert ? "" : "disabled"}>
-                    <span>Send as hidden reply (prevents payload errors)</span>
-                </label>
                 <label class="checkbox_label" style="margin-top:4px;">
-                    <input id="qig-save-to-server" type="checkbox" ${s.saveToServer ? "checked" : ""}>
-                    <span>Save images to ST server (persistent)</span>
+                    <input id="qig-save-to-server" type="checkbox" ${s.saveToServer ? "checked" : ""} ${s.imageHostingEnabled ? "disabled" : ""}>
+                    <span>Save images to ST server (persistent)${s.imageHostingEnabled ? ' <small style="opacity:0.6">(disabled by image hosting)</small>' : ""}</span>
                 </label>
-                <label class="checkbox_label" style="margin-left:16px;opacity:${s.saveToServer ? "1" : "0.6"};">
-                    <input id="qig-save-to-server-meta" type="checkbox" ${s.saveToServerEmbedMetadata ? "checked" : ""} ${s.saveToServer ? "" : "disabled"}>
+                <label class="checkbox_label" style="margin-left:16px;opacity:${(!s.imageHostingEnabled && s.saveToServer) ? "1" : "0.6"};">
+                    <input id="qig-save-to-server-meta" type="checkbox" ${s.saveToServerEmbedMetadata ? "checked" : ""} ${(s.imageHostingEnabled || !s.saveToServer) ? "disabled" : ""}>
                     <span>Embed metadata in saved PNGs</span>
                 </label>
 
@@ -13501,6 +13535,81 @@ function createUI() {
         };
     }
     updateSaveToServerMetaState();
+
+    // Image Hosting event bindings
+    const imageHostingEnabledEl = document.getElementById("qig-image-hosting-enabled");
+    const imageHostingOptionsEl = document.getElementById("qig-image-hosting-options");
+    const imageHostingProviderEl = document.getElementById("qig-image-hosting-provider");
+    const imageHostingKeyEl = document.getElementById("qig-image-hosting-key");
+    const imageHostingEndpointEl = document.getElementById("qig-image-hosting-endpoint");
+    const imageHostingUrlFieldEl = document.getElementById("qig-image-hosting-url-field");
+    const imageHostingCustomEl = document.getElementById("qig-image-hosting-custom");
+
+    const updateImageHostingUI = () => {
+        const enabled = !!imageHostingEnabledEl?.checked;
+        if (imageHostingOptionsEl) imageHostingOptionsEl.style.display = enabled ? "block" : "none";
+        // Disable saveToServer when image hosting is enabled
+        if (saveToServerEl) {
+            saveToServerEl.disabled = enabled;
+            const label = saveToServerEl.closest("label");
+            if (label) label.style.opacity = enabled ? "0.6" : "1";
+        }
+        updateSaveToServerMetaState();
+        // Update provider-specific fields visibility
+        const provider = imageHostingProviderEl?.value || "imgpile";
+        if (imageHostingCustomEl) imageHostingCustomEl.style.display = provider === "custom" ? "block" : "none";
+        // Show API Key field only for providers that need it
+        const keyField = document.getElementById("qig-image-hosting-key-field");
+        if (keyField) keyField.style.display = ["imgpile", "imgos", "imgur"].includes(provider) ? "block" : "none";
+        // Update provider hint
+        const hintEl = document.getElementById("qig-hosting-provider-hint");
+        if (hintEl) {
+            const hints = {
+                imgpile: "✅ NSFW + CORS直连. Needs Bearer token (free) from imgpile.com. 100MB/file. 海外CDN.",
+                imgos: "✅ 国内CORS直连. Needs token (free) from imgos.cn. 国内CDN加速. ⚠️ 2026新站.",
+                imgur: "✅ CORS直连. 14年老牌. ⚠️ No NSFW. Needs Client-ID from api.imgur.com. 20MB/file. 匿名图6月无浏览可删.",
+                catbox: "✅ NSFW, 免Key, 200MB/file, 永久保存. ❌ No CORS — needs server-plugin. 海外单IP运营.",
+                lugu: "🇨🇳 国内15年经典. ✅ 免注册. ❌ No CORS — needs server-plugin. 10MB/file. 游客24h过期, 注册永久.",
+                custom: "Custom endpoint. Must accept the configured body format.",
+            };
+            hintEl.textContent = hints[provider] || hints.imgpile;
+        }
+    };
+
+    if (imageHostingEnabledEl) {
+        imageHostingEnabledEl.onchange = (e) => {
+            getSettings().imageHostingEnabled = e.target.checked;
+            saveSettingsDebounced();
+            updateImageHostingUI();
+        };
+    }
+    if (imageHostingProviderEl) {
+        imageHostingProviderEl.onchange = (e) => {
+            getSettings().imageHostingProvider = e.target.value;
+            saveSettingsDebounced();
+            updateImageHostingUI();
+        };
+    }
+    if (imageHostingKeyEl) {
+        imageHostingKeyEl.onchange = (e) => {
+            getSettings().imageHostingApiKey = e.target.value;
+            saveSettingsDebounced();
+        };
+    }
+    if (imageHostingEndpointEl) {
+        imageHostingEndpointEl.onchange = (e) => {
+            getSettings().imageHostingCustomEndpoint = e.target.value;
+            saveSettingsDebounced();
+        };
+    }
+    if (imageHostingUrlFieldEl) {
+        imageHostingUrlFieldEl.onchange = (e) => {
+            getSettings().imageHostingCustomUrlField = e.target.value;
+            saveSettingsDebounced();
+        };
+    }
+    updateImageHostingUI();
+
     document.getElementById("qig-disable-palette").onchange = (e) => {
         getSettings().disablePaletteButton = e.target.checked;
         saveSettingsDebounced();
@@ -15449,7 +15558,8 @@ function getMetadataSettings(s, options = {}) {
         model: getProviderModelId(s, provider),
         saveToServer: s.saveToServer,
         saveToServerEmbedMetadata: s.saveToServerEmbedMetadata,
-    };
+        imageHostingEnabled: !!s.imageHostingEnabled,
+        imageHostingProvider: s.imageHostingProvider || "imgpile",    };
 
     if (provider === "local") {
         metadata.backend = s.localType || "a1111";
@@ -15560,8 +15670,216 @@ async function saveImageToServer(url, prompt, negative, settings) {
     return await saveBase64AsFile(base64, subFolder, filename, formatInfo.ext);
 }
 
+// === Image Hosting Providers ===
+const IMAGE_HOSTING_PROVIDERS = {
+    imgpile: {
+        name: "imgpile (NSFW OK)",
+        needsKey: true,
+        endpoint: "https://cdn.imgpile.com/api/v1/media",
+        async buildForm(buffer, filename, apiKey, _settings) {
+            const blob = new Blob([buffer]);
+            const form = new FormData();
+            form.append("file", blob, filename);
+            return {
+                url: "https://cdn.imgpile.com/api/v1/media",
+                headers: { Authorization: `Bearer ${apiKey || ""}` },
+                body: form,
+            };
+        },
+        extractUrl(json) {
+            return json?.media?.urls?.original || null;
+        },
+    },
+    imgos: {
+        name: "Imgos 🇨🇳 (国内CORS)",
+        needsKey: true,
+        endpoint: "https://imgos.cn/api/upload",
+        async buildForm(buffer, filename, apiKey, _settings) {
+            const blob = new Blob([buffer]);
+            const form = new FormData();
+            form.append("file", blob, filename);
+            return {
+                url: "https://imgos.cn/api/upload",
+                headers: { Authorization: `Bearer ${apiKey || ""}` },
+                body: form,
+            };
+        },
+        extractUrl(json) {
+            return json?.data?.url || json?.data?.link || json?.url || null;
+        },
+    },
+    imgur: {
+        name: "Imgur",
+        needsKey: true,
+        endpoint: "https://api.imgur.com/3/upload",
+        async buildForm(buffer, filename, apiKey, _settings) {
+            const blob = new Blob([buffer]);
+            const form = new FormData();
+            form.append("image", blob, filename);
+            form.append("type", "file");
+            return {
+                url: "https://api.imgur.com/3/upload",
+                headers: { Authorization: `Client-ID ${apiKey || ""}` },
+                body: form,
+            };
+        },
+        extractUrl(json) {
+            return json?.data?.link || null;
+        },
+    },
+    catbox: {
+        name: "Catbox (NSFW, no key)",
+        needsKey: false,
+        endpoint: "https://catbox.moe/user/api.php",
+        async buildForm(buffer, filename, _apiKey, _settings) {
+            const blob = new Blob([buffer]);
+            const form = new FormData();
+            form.append("reqtype", "fileupload");
+            form.append("fileToUpload", blob, filename);
+            return {
+                url: "https://catbox.moe/user/api.php",
+                headers: {},
+                body: form,
+            };
+        },
+        extractUrl(json) {
+            if (typeof json === "string") {
+                const url = json.trim();
+                return url.startsWith("https://") ? url : null;
+            }
+            return null;
+        },
+    },
+    lugu: {
+        name: "路过图床 🇨🇳 (国内经典)",
+        needsKey: false,
+        endpoint: "https://imgse.com/ajax/plug/upload",
+        async buildForm(buffer, filename, _apiKey, _settings) {
+            const blob = new Blob([buffer]);
+            const form = new FormData();
+            form.append("file", blob, filename);
+            return {
+                url: "https://imgse.com/ajax/plug/upload",
+                headers: {},
+                body: form,
+            };
+        },
+        extractUrl(json) {
+            return json?.data?.url || json?.url || null;
+        },
+    },
+    custom: {
+        name: "Custom",
+        needsKey: false,
+        endpoint: "",
+        async buildForm(buffer, filename, apiKey, settings) {
+            const endpoint = settings?.imageHostingCustomEndpoint;
+            if (!endpoint) throw new Error("Custom image hosting endpoint not configured");
+            const blob = new Blob([buffer]);
+            const form = new FormData();
+            form.append("image", blob, filename);
+            return {
+                url: endpoint,
+                headers: apiKey ? { Authorization: apiKey } : {},
+                body: form,
+            };
+        },
+        extractUrl(json, settings) {
+            const field = settings?.imageHostingCustomUrlField || "data.url";
+            return field.split(".").reduce((obj, key) => obj?.[key], json) || null;
+        },
+    },
+};
+
+function getImageHostingProvider(providerId) {
+    return IMAGE_HOSTING_PROVIDERS[providerId] || null;
+}
+
+async function uploadToImageHost(url, settings) {
+    const s = settings || getSettings();
+    const providerId = s.imageHostingProvider || "imgpile";    const provider = IMAGE_HOSTING_PROVIDERS[providerId];
+    if (!provider) throw new Error(`Unknown image hosting provider: ${providerId}`);
+
+    const { buffer, contentType } = await fetchImageBuffer(url);
+    const formatInfo = detectImageFormat(buffer, contentType, url);
+    const filename = `qig_${Date.now()}.${formatInfo.ext}`;
+
+    const { url: targetUrl, headers: extraHeaders, body } = await provider.buildForm(buffer, filename, s.imageHostingApiKey, s);
+
+    // Parse response using provider-specific logic
+    async function parseResponse(res) {
+        if (!res.ok) {
+            const text = await res.text().catch(() => "");
+            throw new Error(`Image hosting upload failed (${res.status}): ${text.substring(0, 300)}`);
+        }
+        const text = await res.text();
+        console.log("[QIG] Image hosting response (first 500 chars):", text.substring(0, 500));
+        const json = (() => { try { return JSON.parse(text); } catch { return null; } })();
+        const resultUrl = provider.extractUrl(json || text, s);
+        if (!resultUrl) throw new Error("Image hosting returned no URL");
+        return resultUrl;
+    }
+
+    // Strategy 1: Direct fetch — browser auto-sets correct Content-Type for FormData
+    try {
+        const res = await fetch(targetUrl, { method: "POST", headers: extraHeaders, body });
+        return await parseResponse(res);
+    } catch (e) {
+        if (e.name !== "TypeError") throw e; // Not a CORS error, rethrow
+    }
+
+    // Strategy 2: ST proxy
+    try {
+        const stHeaders = typeof getRequestHeaders === "function" ? getRequestHeaders() : {};
+        let proxyHeaders, proxyBody;
+        if (provider.bodyType === "urlencoded") {
+            // URLSearchParams: force correct Content-Type (override getRequestHeaders' application/json)
+            const { "Content-Type": _drop, ...safeStHeaders } = stHeaders;
+            proxyHeaders = { ...safeStHeaders, ...extraHeaders, "Content-Type": "application/x-www-form-urlencoded" };
+            proxyBody = body.toString();
+        } else {
+            // FormData/multipart: strip Content-Type so browser generates boundary
+            const { "Content-Type": _drop, ...safeHeaders } = { ...stHeaders, ...extraHeaders };
+            proxyHeaders = safeHeaders;
+            proxyBody = body;
+        }
+        const proxyUrl = `/proxy/${targetUrl}`;
+        console.log("[QIG] ST proxy attempt:", proxyUrl, "headers:", JSON.stringify(proxyHeaders));
+        const res = await fetch(proxyUrl, { method: "POST", headers: proxyHeaders, body: proxyBody });
+        console.log("[QIG] ST proxy response:", res.status, res.statusText);
+        if (res.ok) return await parseResponse(res);
+        const errText = await res.text().catch(() => "");
+        console.warn("[QIG] ST proxy failed:", res.status, errText.slice(0, 200));
+    } catch (e) { console.warn("[QIG] ST proxy threw:", e); }
+
+    // Strategy 3: Public CORS proxy — forwards body as-is with CORS headers
+    const corsProxies = [
+        (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+        (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    ];
+    for (const buildUrl of corsProxies) {
+        try {
+            const res = await fetch(buildUrl(targetUrl), { method: "POST", headers: extraHeaders, body });
+            if (res.ok) return await parseResponse(res);
+        } catch { /* try next proxy */ }
+    }
+
+    throw new Error("All upload strategies failed. The image hosting service may be temporarily unavailable.");
+}
+
 async function maybeFinalizeUrl(url, prompt, negative, settings) {
     const s = settings || getSettings();
+
+    // Image hosting takes priority over saveToServer
+    if (s?.imageHostingEnabled) {
+        try {
+            return await uploadToImageHost(url, s);
+        } catch (e) {
+            warnSaveToServer(`Image hosting upload failed: ${e.message}`);
+            // Fall through to saveToServer if enabled
+        }
+    }
+
     if (!s?.saveToServer) return url;
     if (typeof saveBase64AsFile !== "function") {
         warnSaveToServer("Save to server unavailable (missing API)");

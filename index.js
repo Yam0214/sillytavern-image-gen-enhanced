@@ -364,7 +364,7 @@ const defaultSettings = {
     saveToServerEmbedMetadata: true,
     // Image Hosting
     imageHostingEnabled: false,
-    imageHostingProvider: "catbox",
+    imageHostingProvider: "imgpile",
     imageHostingApiKey: "",
     imageHostingCustomEndpoint: "",
     imageHostingCustomUrlField: "data.url",
@@ -12644,28 +12644,26 @@ function createUI() {
                         <div class="qig-field">
                             <label>Provider</label>
                             <select id="qig-image-hosting-provider">
-                                <option value="freeimage" ${s.imageHostingProvider === "freeimage" ? "selected" : ""}>FreeImage.host ⭐ (NSFW OK)</option>
-                                <option value="imgbb" ${s.imageHostingProvider === "imgbb" ? "selected" : ""}>imgbb</option>
+                                <option value="imgpile" ${s.imageHostingProvider === "imgpile" ? "selected" : ""}>imgpile ⭐ (NSFW + CORS)</option>
+                                <option value="imgur" ${s.imageHostingProvider === "imgur" ? "selected" : ""}>Imgur (CORS)</option>
+                                <option value="imgbb" ${s.imageHostingProvider === "imgbb" ? "selected" : ""}>imgbb (CORS)</option>
                                 <option value="catbox" ${s.imageHostingProvider === "catbox" ? "selected" : ""}>Catbox (no key)</option>
-                                <option value="telegraph" ${s.imageHostingProvider === "telegraph" ? "selected" : ""}>Telegra.ph (no key)</option>
-                                <option value="smms" ${s.imageHostingProvider === "smms" ? "selected" : ""}>SM.MS</option>
                                 <option value="custom" ${s.imageHostingProvider === "custom" ? "selected" : ""}>Custom</option>
                             </select>
                             <small id="qig-hosting-provider-hint">${(() => {
                                 const hints = {
-                                    freeimage: "✅ NSFW friendly. Needs free API key from freeimage.host. Works via ST proxy (zero config).",
-                                    imgbb: "⚠️ ToS prohibits NSFW. Needs free API key. Works via ST proxy.",
-                                    catbox: "✅ NSFW friendly, no key. Uses multipart upload — may fail without CORS proxy enabled in ST.",
-                                    telegraph: "⚠️ NSFW unclear. No key. Uses multipart — may fail without CORS proxy.",
-                                    smms: "❌ NSFW blocked. Chinese service, content moderated. Key optional.",
+                                    imgpile: "✅ NSFW + CORS直连. Needs free Bearer token from imgpile.com. 100MB/file.",
+                                    imgur: "✅ CORS直连. ⚠️ No NSFW. Needs Client-ID from api.imgur.com. 10MB/file.",
+                                    imgbb: "✅ CORS直连. ⚠️ No NSFW. Needs free API key from api.imgbb.com. 32MB/file.",
+                                    catbox: "✅ NSFW, no key. ❌ No CORS — needs server-plugin or proxy. 200MB/file.",
                                     custom: "Custom endpoint. Must accept the configured body format.",
                                 };
-                                return hints[s.imageHostingProvider] || hints.freeimage;
+                                return hints[s.imageHostingProvider] || hints.imgpile;
                             })()}</small>
                         </div>
-                        <div class="qig-field" id="qig-image-hosting-key-field" style="display:${["smms","imgbb","freeimage"].includes(s.imageHostingProvider) ? "block" : "none"};">
+                        <div class="qig-field" id="qig-image-hosting-key-field" style="display:${["imgpile","imgur","imgbb"].includes(s.imageHostingProvider) ? "block" : "none"};">
                             <label>API Key ${(() => { const p = IMAGE_HOSTING_PROVIDERS?.[s.imageHostingProvider]; return p?.keyOptional ? '<small>(optional)</small>' : ''; })()}</label>
-                            <input id="qig-image-hosting-key" type="password" value="${esc(s.imageHostingApiKey)}" placeholder="Enter API token" autocomplete="off">
+                            <input id="qig-image-hosting-key" type="password" value="${esc(s.imageHostingApiKey)}" placeholder="${{imgpile:"Bearer token from imgpile.com",imgur:"Client-ID from api.imgur.com",imgbb:"API key from api.imgbb.com"}[s.imageHostingProvider]||"Enter API token"}" autocomplete="off">
                         </div>
                     </div>
                     <div id="qig-image-hosting-custom" style="display:${s.imageHostingProvider === "custom" ? "block" : "none"};">
@@ -13533,23 +13531,22 @@ function createUI() {
         }
         updateSaveToServerMetaState();
         // Update provider-specific fields visibility
-        const provider = imageHostingProviderEl?.value || "catbox";
+        const provider = imageHostingProviderEl?.value || "imgpile";
         if (imageHostingCustomEl) imageHostingCustomEl.style.display = provider === "custom" ? "block" : "none";
         // Show API Key field only for providers that need it
         const keyField = document.getElementById("qig-image-hosting-key-field");
-        if (keyField) keyField.style.display = ["smms", "imgbb", "freeimage"].includes(provider) ? "block" : "none";
+        if (keyField) keyField.style.display = ["imgpile", "imgur", "imgbb"].includes(provider) ? "block" : "none";
         // Update provider hint
         const hintEl = document.getElementById("qig-hosting-provider-hint");
         if (hintEl) {
             const hints = {
-                freeimage: "✅ NSFW friendly. Needs free API key from freeimage.host. Works via ST proxy (zero config).",
-                imgbb: "⚠️ ToS prohibits NSFW. Needs free API key. Works via ST proxy.",
-                catbox: "✅ NSFW friendly, no key. Uses multipart upload — may fail without CORS proxy enabled in ST.",
-                telegraph: "⚠️ NSFW unclear. No key. Uses multipart — may fail without CORS proxy.",
-                smms: "❌ NSFW blocked. Chinese service, content moderated. Key optional.",
+                imgpile: "✅ NSFW + CORS直连. Needs free Bearer token from imgpile.com. 100MB/file.",
+                imgur: "✅ CORS直连. ⚠️ No NSFW. Needs Client-ID from api.imgur.com. 10MB/file.",
+                imgbb: "✅ CORS直连. ⚠️ No NSFW. Needs free API key from api.imgbb.com. 32MB/file.",
+                catbox: "✅ NSFW, no key. ❌ No CORS — needs server-plugin or proxy. 200MB/file.",
                 custom: "Custom endpoint. Must accept the configured body format.",
             };
-            hintEl.textContent = hints[provider] || hints.freeimage;
+            hintEl.textContent = hints[provider] || hints.imgpile;
         }
     };
 
@@ -15536,8 +15533,7 @@ function getMetadataSettings(s, options = {}) {
         saveToServer: s.saveToServer,
         saveToServerEmbedMetadata: s.saveToServerEmbedMetadata,
         imageHostingEnabled: !!s.imageHostingEnabled,
-        imageHostingProvider: s.imageHostingProvider || "catbox",
-    };
+        imageHostingProvider: s.imageHostingProvider || "imgpile",    };
 
     if (provider === "local") {
         metadata.backend = s.localType || "a1111";
@@ -15650,71 +15646,22 @@ async function saveImageToServer(url, prompt, negative, settings) {
 
 // === Image Hosting Providers ===
 const IMAGE_HOSTING_PROVIDERS = {
-    catbox: {
-        name: "Catbox (no key needed)",
-        needsKey: false,
-        endpoint: "https://catbox.moe/user/api.php",
-        async buildForm(buffer, filename, _apiKey, _settings) {
-            const blob = new Blob([buffer]);
-            const form = new FormData();
-            form.append("reqtype", "fileupload");
-            form.append("fileToUpload", blob, filename);
-            return {
-                url: "https://catbox.moe/user/api.php",
-                headers: {},
-                body: form,
-            };
-        },
-        extractUrl(json) {
-            if (typeof json === "string") {
-                const url = json.trim();
-                return url.startsWith("https://") ? url : null;
-            }
-            return null;
-        },
-    },
-    telegraph: {
-        name: "Telegra.ph (no key needed)",
-        needsKey: false,
-        endpoint: "https://telegra.ph/upload",
-        async buildForm(buffer, filename, _apiKey, _settings) {
+    imgpile: {
+        name: "imgpile (NSFW OK)",
+        needsKey: true,
+        endpoint: "https://cdn.imgpile.com/api/v1/media",
+        async buildForm(buffer, filename, apiKey, _settings) {
             const blob = new Blob([buffer]);
             const form = new FormData();
             form.append("file", blob, filename);
             return {
-                url: "https://telegra.ph/upload",
-                headers: {},
+                url: "https://cdn.imgpile.com/api/v1/media",
+                headers: { Authorization: `Bearer ${apiKey || ""}` },
                 body: form,
             };
         },
         extractUrl(json) {
-            if (Array.isArray(json) && json[0]?.src) {
-                return `https://telegra.ph${json[0].src}`;
-            }
-            if (typeof json === "string") {
-                const text = json.trim();
-                if (text.startsWith("https://")) return text;
-            }
-            return null;
-        },
-    },
-    smms: {
-        name: "SM.MS",
-        needsKey: true,
-        keyOptional: true,
-        endpoint: "https://sm.ms/api/v2/upload",
-        async buildForm(buffer, filename, apiKey, _settings) {
-            const blob = new Blob([buffer]);
-            const form = new FormData();
-            form.append("smfile", blob, filename);
-            return {
-                url: "https://sm.ms/api/v2/upload",
-                headers: apiKey ? { Authorization: apiKey } : {},
-                body: form,
-            };
-        },
-        extractUrl(json) {
-            return json?.data?.url || json?.images || null;
+            return json?.media?.urls?.original || null;
         },
     },
     imgbb: {
@@ -15737,25 +15684,46 @@ const IMAGE_HOSTING_PROVIDERS = {
             return json?.data?.url || null;
         },
     },
-    freeimage: {
-        name: "FreeImage.host (NSFW OK)",
+    imgur: {
+        name: "Imgur",
         needsKey: true,
-        endpoint: "https://freeimage.host/api/1/upload",
-        bodyType: "urlencoded",
-        async buildForm(buffer, _filename, apiKey, _settings) {
-            const base64 = arrayBufferToBase64(buffer);
-            const params = new URLSearchParams();
-            params.append("key", apiKey || "");
-            params.append("source", base64);
-            params.append("format", "json");
+        endpoint: "https://api.imgur.com/3/upload",
+        async buildForm(buffer, filename, apiKey, _settings) {
+            const blob = new Blob([buffer]);
+            const form = new FormData();
+            form.append("image", blob, filename);
+            form.append("type", "file");
             return {
-                url: "https://freeimage.host/api/1/upload",
-                headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                body: params,
+                url: "https://api.imgur.com/3/upload",
+                headers: { Authorization: `Client-ID ${apiKey || ""}` },
+                body: form,
             };
         },
         extractUrl(json) {
-            return json?.image?.url || json?.image?.display_url || null;
+            return json?.data?.link || null;
+        },
+    },
+    catbox: {
+        name: "Catbox (no key)",
+        needsKey: false,
+        endpoint: "https://catbox.moe/user/api.php",
+        async buildForm(buffer, filename, _apiKey, _settings) {
+            const blob = new Blob([buffer]);
+            const form = new FormData();
+            form.append("reqtype", "fileupload");
+            form.append("fileToUpload", blob, filename);
+            return {
+                url: "https://catbox.moe/user/api.php",
+                headers: {},
+                body: form,
+            };
+        },
+        extractUrl(json) {
+            if (typeof json === "string") {
+                const url = json.trim();
+                return url.startsWith("https://") ? url : null;
+            }
+            return null;
         },
     },
     custom: {
@@ -15787,8 +15755,7 @@ function getImageHostingProvider(providerId) {
 
 async function uploadToImageHost(url, settings) {
     const s = settings || getSettings();
-    const providerId = s.imageHostingProvider || "catbox";
-    const provider = IMAGE_HOSTING_PROVIDERS[providerId];
+    const providerId = s.imageHostingProvider || "imgpile";    const provider = IMAGE_HOSTING_PROVIDERS[providerId];
     if (!provider) throw new Error(`Unknown image hosting provider: ${providerId}`);
 
     const { buffer, contentType } = await fetchImageBuffer(url);

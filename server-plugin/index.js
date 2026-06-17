@@ -91,35 +91,15 @@ async function handleImageHostingUpload(req, res) {
         const customUrlField = req.body?.customUrlField || "";
 
         const providers = {
-            catbox: {
-                endpoint: "https://catbox.moe/user/api.php",
-                buildBody(buf) {
-                    const fd = new FormData();
-                    fd.set("reqtype", "fileupload");
-                    fd.set("fileToUpload", new Blob([buf]), filename);
-                    return fd;
-                },
-                extractUrl(text) { return text.trim(); },
-            },
-            telegraph: {
-                endpoint: "https://telegra.ph/upload",
+            imgpile: {
+                endpoint: "https://cdn.imgpile.com/api/v1/media",
                 buildBody(buf) {
                     const fd = new FormData();
                     fd.set("file", new Blob([buf]), filename);
                     return fd;
                 },
-                extractUrl(json) {
-                    return "https://telegra.ph" + (Array.isArray(json) ? json[0]?.src : json?.[0]?.src);
-                },
-            },
-            smms: {
-                endpoint: "https://sm.ms/api/v2/upload",
-                buildBody(buf) {
-                    const fd = new FormData();
-                    fd.set("smfile", new Blob([buf]), filename);
-                    return fd;
-                },
-                extractUrl(json) { return json?.data?.url || json?.images; },
+                extractUrl(json) { return json?.media?.urls?.original; },
+                authHeader: () => `Bearer ${apiKey}`,
             },
             imgbb: {
                 endpoint: "https://api.imgbb.com/1/upload",
@@ -130,6 +110,27 @@ async function handleImageHostingUpload(req, res) {
                     return fd;
                 },
                 extractUrl(json) { return json?.data?.url; },
+            },
+            imgur: {
+                endpoint: "https://api.imgur.com/3/upload",
+                buildBody(buf) {
+                    const fd = new FormData();
+                    fd.set("image", new Blob([buf]), filename);
+                    fd.set("type", "file");
+                    return fd;
+                },
+                extractUrl(json) { return json?.data?.link; },
+                authHeader: () => `Client-ID ${apiKey}`,
+            },
+            catbox: {
+                endpoint: "https://catbox.moe/user/api.php",
+                buildBody(buf) {
+                    const fd = new FormData();
+                    fd.set("reqtype", "fileupload");
+                    fd.set("fileToUpload", new Blob([buf]), filename);
+                    return fd;
+                },
+                extractUrl(text) { return text.trim(); },
             },
             custom: {
                 endpoint: customEndpoint,
@@ -158,8 +159,8 @@ async function handleImageHostingUpload(req, res) {
 
         const body = provider.buildBody(buf);
         const headers = {};
-        if (apiKey && providerId === "smms") {
-            headers["Authorization"] = apiKey;
+        if (apiKey && provider.authHeader) {
+            headers["Authorization"] = provider.authHeader();
         }
 
         const timeout = withTimeout();

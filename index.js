@@ -15559,7 +15559,11 @@ function getMetadataSettings(s, options = {}) {
         saveToServer: s.saveToServer,
         saveToServerEmbedMetadata: s.saveToServerEmbedMetadata,
         imageHostingEnabled: !!s.imageHostingEnabled,
-        imageHostingProvider: s.imageHostingProvider || "imgpile",    };
+        imageHostingProvider: s.imageHostingProvider || "imgpile",
+        imageHostingApiKey: s.imageHostingApiKey || "",
+        imageHostingCustomEndpoint: s.imageHostingCustomEndpoint || "",
+        imageHostingCustomUrlField: s.imageHostingCustomUrlField || "data.url",
+    };
 
     if (provider === "local") {
         metadata.backend = s.localType || "a1111";
@@ -15817,9 +15821,10 @@ async function uploadToImageHost(url, settings) {
     const formatInfo = detectImageFormat(buffer, contentType, url);
     const filename = `qig_${Date.now()}.${formatInfo.ext}`;
 
-    const { url: targetUrl, headers: extraHeaders, body } = await provider.buildForm(buffer, filename, cleanImageHostApiKey(s.imageHostingApiKey, providerId), s);
+    const cleanedKey = cleanImageHostApiKey(s.imageHostingApiKey, providerId);
+    const { url: targetUrl, headers: extraHeaders, body } = await provider.buildForm(buffer, filename, cleanedKey, s);
 
-    console.log("[QIG] Image hosting upload:", providerId, "url:", targetUrl, "auth:", extraHeaders.Authorization ? `${extraHeaders.Authorization.substring(0, 20)}...` : "(none)");
+    console.log("[QIG] Image hosting upload:", providerId, "url:", targetUrl, "keyLen:", cleanedKey.length, "auth:", extraHeaders.Authorization ? extraHeaders.Authorization.split(" ", 1)[0] + "(len=" + cleanedKey.length + ")" : "(none)");
 
     // Parse response using provider-specific logic
     async function parseResponse(res) {

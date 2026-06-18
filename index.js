@@ -13591,7 +13591,7 @@ function createUI() {
         };
     }
     if (imageHostingKeyEl) {
-        imageHostingKeyEl.onchange = (e) => {
+        imageHostingKeyEl.oninput = (e) => {
             getSettings().imageHostingApiKey = e.target.value;
             saveSettingsDebounced();
         };
@@ -15671,6 +15671,19 @@ async function saveImageToServer(url, prompt, negative, settings) {
 }
 
 // === Image Hosting Providers ===
+
+/** Strip common auth prefixes (Bearer, Client-ID, Token) that users might paste alongside the actual key. */
+function cleanImageHostApiKey(raw, providerId) {
+    let key = String(raw || "").trim();
+    // Remove common prefixes users might accidentally paste
+    key = key.replace(/^(Bearer|Client-ID|Token)\s+/i, "");
+    // For imgur, also strip "v1/" or similar accidental prefixes
+    if (providerId === "imgur") {
+        key = key.trim();
+    }
+    return key;
+}
+
 const IMAGE_HOSTING_PROVIDERS = {
     imgpile: {
         name: "imgpile (NSFW OK)",
@@ -15804,7 +15817,9 @@ async function uploadToImageHost(url, settings) {
     const formatInfo = detectImageFormat(buffer, contentType, url);
     const filename = `qig_${Date.now()}.${formatInfo.ext}`;
 
-    const { url: targetUrl, headers: extraHeaders, body } = await provider.buildForm(buffer, filename, s.imageHostingApiKey, s);
+    const { url: targetUrl, headers: extraHeaders, body } = await provider.buildForm(buffer, filename, cleanImageHostApiKey(s.imageHostingApiKey, providerId), s);
+
+    console.log("[QIG] Image hosting upload:", providerId, "url:", targetUrl, "auth:", extraHeaders.Authorization ? `${extraHeaders.Authorization.substring(0, 20)}...` : "(none)");
 
     // Parse response using provider-specific logic
     async function parseResponse(res) {

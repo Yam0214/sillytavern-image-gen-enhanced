@@ -4,6 +4,7 @@ node_modules/
 .worktrees/
 docs/*
 !docs/comfyui-workflow-variables.md
+!docs/image-hosting.md
 .opencode/
 .env
 .env.*

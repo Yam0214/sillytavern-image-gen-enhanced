@@ -15824,7 +15824,8 @@ async function uploadToImageHost(url, settings) {
     const cleanedKey = cleanImageHostApiKey(s.imageHostingApiKey, providerId);
     const { url: targetUrl, headers: extraHeaders, body } = await provider.buildForm(buffer, filename, cleanedKey, s);
 
-    console.log("[QIG] Image hosting upload:", providerId, "url:", targetUrl, "keyLen:", cleanedKey.length, "auth:", extraHeaders.Authorization ? extraHeaders.Authorization.split(" ", 1)[0] + "(len=" + cleanedKey.length + ")" : "(none)");
+    const keyPreview = cleanedKey.length > 6 ? `${cleanedKey.substring(0, 3)}...${cleanedKey.substring(cleanedKey.length - 3)}` : cleanedKey ? `${cleanedKey.length}chars` : "(empty)";
+    console.log("[QIG] Image hosting upload:", providerId, "url:", targetUrl, "key:", keyPreview);
 
     // Parse response using provider-specific logic
     async function parseResponse(res) {

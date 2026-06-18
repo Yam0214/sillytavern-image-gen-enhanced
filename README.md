@@ -378,7 +378,7 @@ SillyTavern server plugins are not sandboxed. Only install server plugins from d
   window.QIG.logs             // 查看缓存日志
   ```
 - **LLM 请求日志**：生图 Prompt 生成时，打印实际发送给 LLM 的完整请求内容（含缓存破坏标记和 prefill），便于调试 Prompt 工程。([commit](https://github.com/Yam0214/sillytavern-image-gen-enhanced/commit/adfe81b))
-- **图床上传**：生成图片后自动上传外部图床，对话中插入 CDN URL 实现跨设备访问。支持 imgpile（CORS+NSFW）、Imgos（国内CORS）、Imgur（经典兼容）、Catbox（免Key+NSFW）、路过图床（国内经典）等 5 个 provider。详见 [docs/image-hosting.md](docs/image-hosting.md)。
+- **Image hosting upload**：Auto-upload generated images to external hosts, inserting CDN URLs for cross-device access. Supports imgpile (CORS + NSFW), Imgos (CN CDN + CORS), Imgur (classic stable), Catbox (no key + NSFW), and 路过图床 (CN classic, 15yr). See [docs/image-hosting.md](docs/image-hosting.md).
 
 ## License
 

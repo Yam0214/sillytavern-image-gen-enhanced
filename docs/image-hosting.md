@@ -4,7 +4,7 @@
 
 ## 为什么需要图床？
 
-`saveToServer + image_url` 模式下，生成的图片保存在 ST 服务器本地，URL 为 `http://服务器IP:8000/user_data/xxx.png`。换设备后 IP 变化 → 图片 404。画廊存在浏览器 `localStorage`，也不跨设备。图床上传解决这两个问题。
+`saveToServer + image_url` 模式下，生成的图片保存在 ST 服务器本地，URL 为 `http://服务器IP:8000/user_data/xxx.png`。换设备后 IP 变化 → 图片 404。画廊存在浏览器 `localStorage`，也不跨设备。此外，云酒馆等托管服务通常限制存储空间，大量生图会快速占满配额。图床上传解决这三个问题。
 
 ## 如何使用
 

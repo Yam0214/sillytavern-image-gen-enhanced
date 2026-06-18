@@ -360,63 +360,82 @@ SillyTavern server plugins are not sandboxed. Only install server plugins from d
 
 - Veda: ComfyUI Proxy method
 
-## 归档分支
+## 图床上传
 
-### `feature/image-hosting` — 图床上传功能
+将生成的图片上传至外部图床，使用图床 CDN URL 插入对话，实现跨设备图片访问。
 
-将生成的图片上传至外部图床，使用图床 URL 插入对话，实现跨设备图片访问。
+**为什么需要图床？** `saveToServer + image_url` 模式下，生成的图片保存在 ST 服务器本地，URL 为 `http://服务器IP:8000/user_data/xxx.png`。换设备后 IP 变化 → 图片 404。画廊存在浏览器 `localStorage`，也不跨设备。图床上传解决这两个问题。
 
-**状态：开发中。** 分支 `feature/image-hosting`。
+### 如何使用
 
-#### 为什么需要图床？
+1. **打开设置面板** → Output 区域 → 勾选 `Upload to image host ☁`
+2. **选择 Provider** → 下拉菜单选一个图床
+3. **填入 API Key**（部分 provider 需要）→ 注册对应图床获取 token/key
+4. **推荐 output mode 选 `image_url`** → 对话中插入图床 CDN URL
 
-`saveToServer + image_url` 模式下，生成的图片保存在 ST 服务器本地，URL 为 `http://服务器IP:8000/user_data/xxx.png`。换设备后 IP 变化 → 图片 404。画廊存在浏览器 `localStorage`，也不跨设备。图床上传解决这两个问题。
+### 支持图床一览
 
-#### 支持的图床
+按梯度分为两档：
 
-按梯度分为「最方便」和「最稳定」两档：
+| 梯度 | 图床 | Provider ID | CORS | origin | NSFW | 需要Key | 部署要求 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **最方便** | **imgpile** ⭐ | `imgpile` | ✅ | 反射 origin | ✅ | Bearer token（免费注册） | 无需任何配置 |
+| **最方便** | **Imgos** 🇨🇳 | `imgos` | ✅ | 未详细测试 | ⚠️ 不明 | token（免费注册） | 无需任何配置 |
+| **最稳定** | **Imgur** | `imgur` | ✅ | `*` | ❌ | Client-ID（免费注册） | CORS 直连可用，双通道 |
+| **最稳定** | **Catbox** | `catbox` | ❌ | 无 | ✅ | 无需 | **必须安装 server-plugin** |
+| **最稳定** | **路过图床** 🇨🇳 | `lugu` | ❌ | 无 | ❌ | 免注册可用 | **必须安装 server-plugin** |
+| — | **Custom** | `custom` | 视配置 | — | 视配置 | 视配置 | 视配置 |
 
-| 梯度 | 图床 | Provider ID | CORS | NSFW | 需要Key | 免改ST | 核心优势 | 核心风险 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| **最方便** | **imgpile** ⭐ | `imgpile` | ✅ | ✅ | Bearer token（免费注册） | ✅ | CORS+NSFW+100MB | OpenAI审核可能误判AI生成图 |
-| **最方便** | **Imgos** 🇨🇳 | `imgos` | ✅ | ⚠️ 不明 | token（免费注册） | ✅ | 国内CDN+CORS+免费 | 2026新站，无长期运营记录 |
-| **最稳定** | **Imgur** | `imgur` | ✅ | ❌ | Client-ID（免费注册） | ✅ | 14年老牌，双通道 | 匿名图6月无浏览可删+禁NSFW |
-| **最稳定** | **Catbox** | `catbox` | ❌ | ✅ | 无需 | ❌ 需server-plugin | 免Key+NSFW+200MB+永久 | 单人运营，无CORS |
-| **最稳定** | **路过图床** 🇨🇳 | `lugu` | ❌ | ❌ | 免注册可用 | ❌ 需server-plugin | 15年老牌，国内最经典 | 无正式API，域名常换 |
-| — | **Custom** | `custom` | 视配置 | 视配置 | 视配置 | 视配置 | 自定义端点 | — |
+**CORS 说明：**
+- ✅ **有 CORS** 的图床（imgpile, Imgos, Imgur）：浏览器可以直接 POST 上传，**无需任何 ST 配置**。适合云酒馆等无管理权限的环境。
+- ❌ **无 CORS** 的图床（Catbox, 路过图床）：浏览器无法直连，**必须通过 ST server-plugin 中转**。适合自建用户，需在 `config.yaml` 设置 `enableServerPlugins: true` 并安装插件。
+- **免改ST** = 不需要改动 ST 源码或 `config.yaml`。纯浏览器功能，开箱即用。
 
-**说明：**
-- **最方便**：CORS 直连，即插即用，无需改动 ST 配置。适合云酒馆用户。
-- **最稳定**：允许依赖 server-plugin 中转，服务运营时间久。适合自建用户。
-- 🇨🇳 标记的图床使用国内 CDN，从中国大陆访问更快。
+### 图床详情
 
-#### 设置
+**imgpile** — CORS + NSFW + 100MB/文件 + 1000次/天。最推荐的即插即用方案。注册 [imgpile.com](https://imgpile.com) → 账户设置生成 Bearer token 填入。
 
-1. 在 Output 设置区，勾选 `Upload to image host ☁`
-2. 选择 Provider
-3. 需要 Key 的 provider 填入 API Key
-4. 推荐 output mode 选 `image_url`
+**Imgos** — 国内 CDN + CORS，中国大陆访问快。注册获取 token 填入。2026 年新站，长期稳定性待验证。
 
-#### CORS 测试结果（2026-06）
+**Imgur** — 14 年老牌图床，API 最稳定。注册 [api.imgur.com/oauth2/addclient](https://api.imgur.com/oauth2/addclient) 获取 Client-ID。⚠️ 禁止 NSFW，匿名上传 6 个月无浏览可被删除。
 
-| Provider | CORS 支持 | `access-control-allow-origin` | 客户端直连 | NSFW |
-| --- | --- | --- | --- | --- |
-| **imgpile** | ✅ | 反射 origin | ✅ | ✅ |
-| **Imgos** | ✅ | 未详细测试 | ✅ | ⚠️ |
-| **Imgur** | ✅ | `*` | ✅ | ❌ |
-| **Catbox** | ❌ | 无 | ❌ | ✅ |
-| **路过图床** | ❌ | 无 | ❌ | ❌ |
-| **imgbb** | ✅ | `*` | ✅ | ❌ ToS禁止 |
-| **SM.MS/S.EE** | ✅ | `*` | ✅ | ❌ 已转付费$5.99/月起 |
-| **FreeImage.host** | ❌ | 无 | ❌ | ✅ |
-| **Telegra.ph** | ❌ | 无 | ❌ | ⚠️ |
+**Catbox** — 免 Key + NSFW + 200MB + 永久保存。需要 server-plugin 中转（无 CORS）。注册账号可管理已上传图片，否则匿名上传不可删除。
 
-#### 技术发现
+**路过图床** — 免注册国内老牌，15 年运营。图片链接格式支持多种。需要 server-plugin 中转（无 CORS）。游客上传 24 小时过期，注册后永久保存。
 
-- ST 的 `getRequestHeaders()` 返回 `Content-Type: application/json`，会覆盖 urlencoded 的 Content-Type
-- ST 的 `/proxy/` 端点虽然返回 200 OK，但响应体是目标网站的 HTML 首页，说明 POST body 未被正确转发
-- 公共 CORS 代理（corsproxy.io、allorigins.win）对 POST 请求不稳定（403/413/522）
-- ST server-plugin 在启动时加载，运行中不支持热更新
+### API Key 获取指南
+
+| 图床 | 注册地址 | Key 格式 | 填入方法 |
+| --- | --- | --- | --- |
+| imgpile | [imgpile.com/register](https://imgpile.com/register) | Bearer token（纯字符串） | 复制 token 填入 API Key 框 |
+| Imgos | [imgos.cn](https://imgos.cn) | token | 复制 token 填入 |
+| Imgur | [api.imgur.com/oauth2/addclient](https://api.imgur.com/oauth2/addclient) | Client-ID（纯字符串） | 复制 Client-ID 填入 |
+
+> **注意**：API Key 框中只需填纯 key/token 字符串，不要带 `Bearer ` 或 `Client-ID ` 前缀。代码会自动添加。
+
+### CORS 完整测试结果
+
+对主流免费图床进行了 `curl -I` + `curl -X OPTIONS` CORS 头测试（2026-06）：
+
+| Provider | CORS | `access-control-allow-origin` | 客户端直连 | NSFW | 备注 |
+| --- | --- | --- | --- | --- | --- |
+| **imgpile** | ✅ | 反射 origin | ✅ | ✅ | |
+| **Imgos** | ✅ | 未详细测试 | ✅ | ⚠️ | |
+| **Imgur** | ✅ | `*` | ✅ | ❌ | 删除匿名/不活跃内容 |
+| **imgbb** | ✅ | `*` | ✅ | ❌ | ToS 禁止；2024年宕机频繁 |
+| **SM.MS/S.EE** | ✅ | `*` | ✅ | ❌ | 2026.2 已转付费 $5.99/月起 |
+| **Catbox** | ❌ | 无 | ❌ | ✅ | |
+| **路过图床** | ❌ | 无 | ❌ | ❌ | 通过 web scraping 上传 |
+| **FreeImage.host** | ❌ | 无 | ❌ | ✅ | |
+| **Telegra.ph** | ❌ | 无 | ❌ | ⚠️ | |
+| **postimages** | ❌ | 无 | ❌ | ❓ | 不提供直链 |
+| **tmpfiles.org** | ✅ | `*` | ✅ | ❓ | **临时文件，自动过期** |
+
+### 技术限制
+
+- **ST 的 `/proxy/` 端点不转发 POST body**：multipart 返回 500，urlencoded 返回目标站首页 HTML（body 丢失）。仅对 GET/JSON POST 有效。
+- **公共 CORS 代理不支持 POST**：corsproxy.io 返回 403，allorigins.win 返回 413/522。
+- **server-plugin 需要 ST 重启生效**，运行中不支持热更新。
 
 ## 修改记录
 

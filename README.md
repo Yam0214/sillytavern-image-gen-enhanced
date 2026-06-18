@@ -1,8 +1,8 @@
 # Quick Image Gen (Enhanced)
 
-> **Fork 自 [platberlitz/sillytavern-image-gen](https://github.com/platberlitz/sillytavern-image-gen)**，包含额外的问题修复和功能增强。详见[修改记录](#修改记录)。
+> **Forked from [platberlitz/sillytavern-image-gen](https://github.com/platberlitz/sillytavern-image-gen)** with additional bugfixes and features. See [Changelog](#changelog-this-fork).
 >
-> ⚠️ **注意**：生图模型预设和 Prompt 预设不会从上游仓库自动继承，切换到本仓库后需要重新配置。
+> ⚠️ **Note**: Model presets and prompt presets are not automatically inherited from the upstream repository. Reconfigure them after switching to this fork.
 
 Image generation in SillyTavern. 17 backends, 44 style presets, three LLM prompt modes, a two-step chat-scene prompt pipeline, contextual filters, batch generation, and auto-insert.
 
@@ -339,7 +339,7 @@ Active preset is highlighted in the preset chip UI.
 
 SillyTavern's built-in CORS proxy is blocked by `basicAuthMode` when a provider request also needs its own `Authorization` header. This affects CivitAI and Replicate in browser-only mode.
 
-The optional `server-plugin/` directory relays CivitAI consumer-jobs endpoint, Replicate predictions endpoints, and image hosting uploads for CORS-blocked providers (Catbox, 路过图床).
+The optional `server-plugin/` directory relays CivitAI consumer-jobs endpoint, Replicate predictions endpoints, and image hosting uploads for CORS-blocked providers (Catbox, 路过图床 / Lugu).
 
 Setup:
 
@@ -360,25 +360,25 @@ SillyTavern server plugins are not sandboxed. Only install server plugins from d
 
 - Veda: ComfyUI Proxy method
 
-## 修改记录
+## Changelog (this fork)
 
-基于上游 [platberlitz/sillytavern-image-gen](https://github.com/platberlitz/sillytavern-image-gen) 的修改。
+Changes from upstream [platberlitz/sillytavern-image-gen](https://github.com/platberlitz/sillytavern-image-gen).
 
-### 问题修复
+### Bugfixes
 
-- **修复 Palette 按钮加载动画导致聊天区域滚动条闪烁**：将 `fa-spin` 旋转动画从按钮外层 `<div>` 移至内部 `<i>` 图标元素，避免整个按钮旋转触发 `#chat` flex 布局的 sub-pixel 重算。同时为 `#chat` 添加 `min-height: 0` 修复 flex-overflow 反模式。([commit](https://github.com/Yam0214/sillytavern-image-gen-enhanced/commit/555f8b4))
-- **修复 `userDesc` 在未设置 persona 时回退为空**：当 `powerUserSettings.persona_description` 存在时作为 `userDesc` 的兜底值，避免用户描述缺失。([commit](https://github.com/Yam0214/sillytavern-image-gen-enhanced/commit/362a341))
+- **Fixed palette button spinner causing chat scrollbar flicker**: Moved `fa-spin` animation from the outer `<div>` to the inner `<i>` icon element to prevent whole-button rotation from triggering sub-pixel recalculation in `#chat` flex layout. Also added `min-height: 0` to `#chat` to fix the flex-overflow anti-pattern. ([commit](https://github.com/Yam0214/sillytavern-image-gen-enhanced/commit/555f8b4))
+- **Fixed `userDesc` falling back to empty when no persona is set**: When `powerUserSettings.persona_description` exists, use it as the fallback value for `userDesc` to avoid missing user descriptions. ([commit](https://github.com/Yam0214/sillytavern-image-gen-enhanced/commit/362a341))
 
-### 功能添加
+### Features
 
-- **Console 调试开关**：暴露 `window.QIG` 对象，支持从浏览器 Console 控制日志详细程度和查看缓存日志。([commit](https://github.com/Yam0214/sillytavern-image-gen-enhanced/commit/adfe81b))
+- **Console debug toggle**: Expose `window.QIG` object for controlling log verbosity and viewing cached logs from the browser Console. ([commit](https://github.com/Yam0214/sillytavern-image-gen-enhanced/commit/adfe81b))
   ```js
-  window.QIG.verbose = true   // 开启完整日志（默认截断 200 字符）
-  window.QIG.verbose = false  // 关闭（恢复截断）
-  window.QIG.logs             // 查看缓存日志
+  window.QIG.verbose = true   // full logs (default truncates at 200 chars)
+  window.QIG.verbose = false  // resume truncation
+  window.QIG.logs             // view cached logs
   ```
-- **LLM 请求日志**：生图 Prompt 生成时，打印实际发送给 LLM 的完整请求内容（含缓存破坏标记和 prefill），便于调试 Prompt 工程。([commit](https://github.com/Yam0214/sillytavern-image-gen-enhanced/commit/adfe81b))
-- **Image hosting upload**：Auto-upload generated images to external hosts, inserting CDN URLs for cross-device access. Supports imgpile (CORS + NSFW), Imgos (CN CDN + CORS), Imgur (classic stable), Catbox (no key + NSFW), and 路过图床 (CN classic, 15yr). See [docs/image-hosting.md](docs/image-hosting.md).
+- **LLM request logging**: Print the full request sent to the LLM during image prompt generation (including cache-busting markers and prefill) for prompt engineering debugging. ([commit](https://github.com/Yam0214/sillytavern-image-gen-enhanced/commit/adfe81b))
+- **Image hosting upload**: Auto-upload generated images to external hosts, inserting CDN URLs for cross-device access. Supports imgpile (CORS + NSFW), Imgos (CN CDN + CORS), Imgur (classic stable), Catbox (no key + NSFW), and 路过图床 / Lugu (CN classic, 15 years). See [docs/image-hosting.md](docs/image-hosting.md).
 
 ## License
 

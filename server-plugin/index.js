@@ -86,7 +86,10 @@ async function handleImageHostingUpload(req, res) {
         const providerId = requireString(req.body?.provider, "provider");
         const imageBase64 = requireString(req.body?.imageBase64, "imageBase64");
         const filename = requireString(req.body?.filename, "filename");
-        const apiKey = req.body?.apiKey || "";
+        let apiKey = req.body?.apiKey || "";
+        // Strip common auth prefixes users might accidentally paste
+        apiKey = apiKey.trim().replace(/^(Bearer|Client-ID|Token)\s+/i, "");
+
         const customEndpoint = req.body?.customEndpoint || "";
         const customUrlField = req.body?.customUrlField || "";
 

@@ -13591,7 +13591,7 @@ function createUI() {
         };
     }
     if (imageHostingKeyEl) {
-        imageHostingKeyEl.onchange = (e) => {
+        imageHostingKeyEl.oninput = (e) => {
             getSettings().imageHostingApiKey = e.target.value;
             saveSettingsDebounced();
         };
@@ -15559,7 +15559,11 @@ function getMetadataSettings(s, options = {}) {
         saveToServer: s.saveToServer,
         saveToServerEmbedMetadata: s.saveToServerEmbedMetadata,
         imageHostingEnabled: !!s.imageHostingEnabled,
-        imageHostingProvider: s.imageHostingProvider || "imgpile",    };
+        imageHostingProvider: s.imageHostingProvider || "imgpile",
+        imageHostingApiKey: s.imageHostingApiKey || "",
+        imageHostingCustomEndpoint: s.imageHostingCustomEndpoint || "",
+        imageHostingCustomUrlField: s.imageHostingCustomUrlField || "data.url",
+    };
 
     if (provider === "local") {
         metadata.backend = s.localType || "a1111";
@@ -15671,6 +15675,19 @@ async function saveImageToServer(url, prompt, negative, settings) {
 }
 
 // === Image Hosting Providers ===
+
+/** Strip common auth prefixes (Bearer, Client-ID, Token) that users might paste alongside the actual key. */
+function cleanImageHostApiKey(raw, providerId) {
+    let key = String(raw || "").trim();
+    // Remove common prefixes users might accidentally paste
+    key = key.replace(/^(Bearer|Client-ID|Token)\s+/i, "");
+    // For imgur, also strip "v1/" or similar accidental prefixes
+    if (providerId === "imgur") {
+        key = key.trim();
+    }
+    return key;
+}
+
 const IMAGE_HOSTING_PROVIDERS = {
     imgpile: {
         name: "imgpile (NSFW OK)",
@@ -15804,7 +15821,11 @@ async function uploadToImageHost(url, settings) {
     const formatInfo = detectImageFormat(buffer, contentType, url);
     const filename = `qig_${Date.now()}.${formatInfo.ext}`;
 
-    const { url: targetUrl, headers: extraHeaders, body } = await provider.buildForm(buffer, filename, s.imageHostingApiKey, s);
+    const cleanedKey = cleanImageHostApiKey(s.imageHostingApiKey, providerId);
+    const { url: targetUrl, headers: extraHeaders, body } = await provider.buildForm(buffer, filename, cleanedKey, s);
+
+    const keyPreview = cleanedKey.length > 6 ? `${cleanedKey.substring(0, 3)}...${cleanedKey.substring(cleanedKey.length - 3)}` : cleanedKey ? `${cleanedKey.length}chars` : "(empty)";
+    console.log("[QIG] Image hosting upload:", providerId, "url:", targetUrl, "key:", keyPreview);
 
     // Parse response using provider-specific logic
     async function parseResponse(res) {
